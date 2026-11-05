@@ -47,6 +47,25 @@ impl TlsConfig {
         }
     }
 
+    /// Checks that a server could load this configuration, without starting one.
+    ///
+    /// A caller can use this to decide on a fallback before it commits to its listeners.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a certificate, key, or client authority can't be used. See
+    /// [`Error::is_tls_identity`] for the difference between them.
+    pub fn validate(&self) -> Result<(), Error> {
+        Material::load(self).map(|_| ())
+    }
+
+    /// Keeps the client policy but generates the server's certificate.
+    #[must_use]
+    pub fn with_generated_identity(mut self) -> Self {
+        self.files = None;
+        self
+    }
+
     /// Requires clients to present a certificate signed by an authority in this PEM bundle.
     ///
     /// Without this, a client certificate is optional and reported as unverified.

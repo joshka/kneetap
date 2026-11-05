@@ -9,22 +9,44 @@ const BINARY: &str = env!("CARGO_BIN_EXE_kneetap");
 /// A running `kneetap serve`, stopped when dropped.
 struct Serve {
     child: Child,
+    scheme: String,
     address: String,
+}
+
+/// Turns HTTPS off unless the test wants it, because the default port can only be held once.
+fn tls_default(args: &[&str]) -> &'static [&'static str] {
+    if args.contains(&"--tls-port") {
+        &[]
+    } else {
+        &["--no-tls"]
+    }
 }
 
 impl Serve {
     fn start(bind: &str, args: &[&str]) -> Self {
-        let mut child = Command::new(BINARY)
+        let child = Command::new(BINARY)
             .args(["serve", "--bind", bind, "--port", "0"])
+            .args(tls_default(args))
             .args(args)
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
+        Self::attach(child)
+    }
+
+    /// Waits for a started server to print its first URL.
+    fn attach(mut child: Child) -> Self {
         let stdout = child.stdout.take().unwrap();
         let mut line = String::new();
         BufReader::new(stdout).read_line(&mut line).unwrap();
-        let address = line.trim().rsplit('/').next().unwrap().to_owned();
-        Self { child, address }
+        let (scheme, address) = line.trim().rsplit_once("://").unwrap();
+        let scheme = scheme.rsplit(' ').next().unwrap().to_owned();
+        let address = address.to_owned();
+        Self {
+            child,
+            scheme,
+            address,
+        }
     }
 
     fn port(&self) -> &str {
@@ -125,18 +147,13 @@ fn report_refuses_an_untrusted_certificate_by_default() {
 fn running_out_of_descriptors_does_not_stop_the_server() {
     use std::net::TcpStream;
 
-    let script = "ulimit -n 40; exec \"$0\" serve --bind 127.0.0.1 --port 0";
-    let mut child = Command::new("/bin/sh")
+    let script = "ulimit -n 40; exec \"$0\" serve --bind 127.0.0.1 --port 0 --no-tls";
+    let child = Command::new("/bin/sh")
         .args(["-c", script, BINARY])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    let address = line.trim().rsplit('/').next().unwrap().to_owned();
-    let mut server = Serve { child, address };
+    let mut server = Serve::attach(child);
 
     let held: Vec<_> = (0..60)
         .filter_map(|_| TcpStream::connect(&server.address).ok())
@@ -192,7 +209,15 @@ fn a_signal_lets_the_request_in_progress_finish(#[case] signal: &str) {
 /// Starts `kneetap serve --verbose` with its stderr piped, returning the process and its address.
 fn serve_verbose(args: &[&str]) -> (Child, String) {
     let mut child = Command::new(BINARY)
-        .args(["serve", "--verbose", "--bind", "127.0.0.1", "--port", "0"])
+        .args([
+            "serve",
+            "--verbose",
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--no-tls",
+        ])
         .args(args)
         .env_remove("RUST_LOG")
         .stdout(Stdio::piped())
@@ -236,7 +261,7 @@ fn verbose_logs_each_request_to_stderr() {
 fn an_invalid_log_filter_is_reported_as_a_log_event() {
     let mut child = Command::new(BINARY)
         .args(["serve", "--log-format", "json"])
-        .args(["--bind", "127.0.0.1", "--port", "0"])
+        .args(["--bind", "127.0.0.1", "--port", "0", "--no-tls"])
         .env("RUST_LOG", "kneetap=nonsense")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -288,10 +313,171 @@ fn logs_written_to_a_pipe_have_no_color() {
 fn a_closed_log_pipe_does_not_stop_the_server() {
     let (mut child, address) = serve_verbose(&[]);
     drop(child.stderr.take());
-    let mut server = Serve { child, address };
+    let scheme = "http".to_owned();
+    let mut server = Serve {
+        child,
+        scheme,
+        address,
+    };
 
     let response = exchange(&server.address, GET_BENCH);
 
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert_eq!(server.child.try_wait().unwrap(), None, "the server exited");
+}
+
+/// Starts a server and returns its report from `/api`, for checking what it worked around.
+fn status_of(args: &[&str]) -> String {
+    let server = Serve::start("127.0.0.1", args);
+    let report = kneetap(&[
+        "report",
+        "--json",
+        "--insecure",
+        &format!("https://{}", server.address),
+    ]);
+    String::from_utf8(report.stdout).unwrap()
+}
+
+#[test]
+fn an_unusable_certificate_falls_back_to_a_generated_one() {
+    let args = [
+        "--no-http",
+        "--tls-port",
+        "0",
+        "--cert",
+        "/missing",
+        "--key",
+        "/missing",
+    ];
+
+    let report = status_of(&args);
+
+    let report: serde_json::Value = serde_json::from_str(&report).unwrap();
+    let degradations = &report["serverStatus"]["degradations"];
+    assert_eq!(
+        *degradations,
+        serde_json::json!(["server_identity_fallback"])
+    );
+    assert_eq!(report["tls"]["certificateSource"], "generated");
+}
+
+#[test]
+fn strict_refuses_the_generated_certificate_fallback() {
+    let output = kneetap(&[
+        "serve",
+        "--strict",
+        "--bind",
+        "127.0.0.1",
+        "--port",
+        "0",
+        "--tls-port",
+        "0",
+        "--cert",
+        "/missing",
+        "--key",
+        "/missing",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn a_broken_client_authority_never_serves_https_without_it() {
+    let output = kneetap(&[
+        "serve",
+        "--no-http",
+        "--bind",
+        "127.0.0.1",
+        "--tls-port",
+        "0",
+        "--cacert",
+        "/missing",
+    ]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+}
+
+#[test]
+fn the_default_bind_serves_ipv6_and_ipv4_on_one_port() {
+    let child = Command::new(BINARY)
+        .args(["serve", "--port", "0", "--no-tls"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let server = Serve::attach(child);
+
+    // Some containers and CI runners have no IPv6 loopback to check.
+    let has_ipv6 = std::net::TcpListener::bind("[::1]:0").is_ok();
+    let binds = if has_ipv6 {
+        &["127.0.0.1", "::1"][..]
+    } else {
+        &["127.0.0.1"][..]
+    };
+    for bind in binds {
+        let health = kneetap(&["healthcheck", "--bind", bind, "--port", server.port()]);
+        assert!(health.status.success(), "{bind}: {health:?}");
+    }
+}
+
+/// Returns the name a server reports when configured with `KNEETAP_NAME` and these arguments.
+fn name_with_environment(args: &[&str]) -> String {
+    let child = Command::new(BINARY)
+        .args(["serve", "--bind", "127.0.0.1", "--port", "0", "--no-tls"])
+        .args(args)
+        .env("KNEETAP_NAME", "from-environment")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let server = Serve::attach(child);
+    let report = kneetap(&["report", &format!("http://{}", server.address)]);
+    let text = String::from_utf8(report.stdout).unwrap();
+    text.lines().next().unwrap().to_owned()
+}
+
+#[rstest::rstest]
+#[case(&[], "Name: from-environment")]
+#[case(&["--name", "from-flag"], "Name: from-flag")]
+fn flags_take_priority_over_environment_variables(#[case] args: &[&str], #[case] name: &str) {
+    assert_eq!(name_with_environment(args), name);
+}
+
+/// Returns the scheme of the first URL a server prints when configured with these variables.
+fn first_scheme_with_environment(variables: &[(&str, &str)]) -> String {
+    let child = Command::new(BINARY)
+        .args([
+            "serve",
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--tls-port",
+            "0",
+        ])
+        .envs(variables.iter().copied())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let server = Serve::attach(child);
+    server.scheme.clone()
+}
+
+#[rstest::rstest]
+#[case(&[("KNEETAP_NO_HTTP", "1")], "https")]
+#[case(&[("KNEETAP_NO_HTTP", "true")], "https")]
+#[case(&[("KNEETAP_NO_HTTP", "0")], "http")]
+#[case(&[("KNEETAP_NO_HTTP", "false"), ("KNEETAP_NO_TLS", "false")], "http")]
+fn flags_set_in_the_environment_can_be_on_or_off(
+    #[case] variables: &[(&str, &str)],
+    #[case] scheme: &str,
+) {
+    assert_eq!(first_scheme_with_environment(variables), scheme);
+}
+
+#[test]
+fn turning_off_both_listeners_is_an_error() {
+    let output = kneetap(&["serve", "--no-http", "--no-tls"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
 }

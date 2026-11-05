@@ -376,6 +376,7 @@ mod tests {
           "name": "blue",
           "remoteAddr": "10.0.0.9:4000",
           "serverStatus": {
+            "degradations": [],
             "reloadError": null
           },
           "target": "/api",

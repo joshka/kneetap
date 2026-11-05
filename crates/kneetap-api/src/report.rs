@@ -63,6 +63,10 @@ pub struct Report {
 pub struct ServerStatus {
     /// Why the last certificate reload was rejected. The previous certificate stays in use.
     pub reload_error: Option<String>,
+
+    /// Codes for what didn't start normally, such as `http_bind_failed`.
+    #[serde(default)]
+    pub degradations: Vec<String>,
 }
 
 /// What was negotiated on a TLS connection.
@@ -273,6 +277,7 @@ mod tests {
         let report = Report {
             server_status: ServerStatus {
                 reload_error: Some("bad key".to_owned()),
+                degradations: Vec::new(),
             },
             ..report()
         };

@@ -4,6 +4,7 @@
 //! `kneetap-client` instead.
 
 mod cli;
+mod startup;
 mod telemetry;
 
 pub use cli::run;
