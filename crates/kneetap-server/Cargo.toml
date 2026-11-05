@@ -12,18 +12,20 @@ keywords = ["http", "debugging", "server"]
 workspace = true
 
 [dependencies]
-axum = { workspace = true, features = ["http1", "http2", "tokio"] }
+axum = { workspace = true, features = ["http1", "http2", "query", "tokio"] }
 base64 = { workspace = true, features = ["std"] }
 hostname.workspace = true
+humantime.workspace = true
 if-addrs.workspace = true
 kneetap-api.workspace = true
 mime.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "time"] }
 
 [dev-dependencies]
 insta = { workspace = true, features = ["json"] }
 reqwest.workspace = true
 rstest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util"] }
 tower = { workspace = true, features = ["util"] }

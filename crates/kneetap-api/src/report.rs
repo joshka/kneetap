@@ -23,6 +23,11 @@ pub struct Report {
     /// The address of the connected peer, which is the proxy when there is one.
     pub remote_addr: String,
 
+    /// The server's environment as `NAME=value` lines, when the operator allowed it and the client
+    /// asked for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<Vec<String>>,
+
     /// The request method.
     pub method: String,
 
@@ -71,14 +76,20 @@ impl Display for Report {
             writeln!(f, "IP: {address}")?;
         }
         writeln!(f, "RemoteAddr: {}", self.remote_addr)?;
+        if let Some(environment) = &self.environment {
+            writeln!(f, "Environment:")?;
+            for line in environment {
+                writeln!(f, "  {line}")?;
+            }
+        }
         writeln!(f, "{} {} {}", self.method, self.target, self.http_version)?;
         // HTTP/2 carries the host in `:authority`, so it's missing from the header map.
         if !self.headers.contains_key("host") && !self.host.is_empty() {
-            writeln!(f, "host: {}", self.host)?;
+            writeln!(f, "  host: {}", self.host)?;
         }
         for (name, values) in &self.headers {
             for value in values {
-                writeln!(f, "{name}: {value}")?;
+                writeln!(f, "  {name}: {value}")?;
             }
         }
         writeln!(f)
@@ -95,6 +106,7 @@ mod tests {
             hostname: Some("web-1".to_owned()),
             addresses: vec!["10.0.0.5".to_owned()],
             remote_addr: "10.0.0.9:4000".to_owned(),
+            environment: None,
             method: "GET".to_owned(),
             target: "/a?b=c".to_owned(),
             host: "example.test".to_owned(),
@@ -113,8 +125,28 @@ mod tests {
         IP: 10.0.0.5
         RemoteAddr: 10.0.0.9:4000
         GET /a?b=c HTTP/2.0
-        host: example.test
-        accept: */*
+          host: example.test
+          accept: */*
+        ");
+    }
+
+    #[test]
+    fn environment_lines_follow_their_heading() {
+        let report = Report {
+            environment: Some(vec!["A=1".to_owned()]),
+            ..report()
+        };
+
+        insta::assert_snapshot!(report, @r"
+        Name: blue
+        Hostname: web-1
+        IP: 10.0.0.5
+        RemoteAddr: 10.0.0.9:4000
+        Environment:
+          A=1
+        GET /a?b=c HTTP/2.0
+          host: example.test
+          accept: */*
         ");
     }
 
