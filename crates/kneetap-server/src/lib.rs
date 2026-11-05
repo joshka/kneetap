@@ -30,6 +30,9 @@ mod host;
 mod report;
 mod routes;
 mod server;
+mod tls;
+mod transport;
 
 pub use error::Error;
 pub use server::{Server, ServerBuilder};
+pub use tls::TlsConfig;

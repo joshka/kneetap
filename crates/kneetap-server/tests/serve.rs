@@ -12,6 +12,8 @@ async fn serves_until_shutdown_completes() {
         let _ = stopped.await;
     }));
 
+    // Plain reqwest in a test has no provider of its own, so a global one is fine here.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let body = reqwest::get(&url).await.unwrap().text().await.unwrap();
     stop.send(()).unwrap();
 

@@ -14,7 +14,7 @@
 pub mod grpc;
 mod report;
 
-pub use report::{BodyEncoding, Report};
+pub use report::{BodyEncoding, CertificateSource, ClientVerification, Report, TlsReport};
 
 /// Response header that identifies a kneetap `/health` endpoint.
 ///

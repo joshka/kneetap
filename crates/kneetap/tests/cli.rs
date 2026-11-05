@@ -90,3 +90,31 @@ fn kt_is_the_same_program() {
 
     assert_eq!(short.stdout, long.stdout);
 }
+
+#[test]
+fn report_reaches_https_with_a_generated_certificate() {
+    let server = Serve::start("127.0.0.1", &["--tls-port", "0", "--no-http"]);
+
+    let report = kneetap(&[
+        "report",
+        &format!("https://{}", server.address),
+        "--insecure",
+    ]);
+
+    assert_eq!(report.status.code(), Some(0));
+    let text = String::from_utf8(report.stdout).unwrap();
+    let session = text.lines().find(|line| line.starts_with("TLS: "));
+    assert_eq!(
+        session,
+        Some("TLS: TLSv1_3 TLS13_AES_256_GCM_SHA384 (absent)")
+    );
+}
+
+#[test]
+fn report_refuses_an_untrusted_certificate_by_default() {
+    let server = Serve::start("127.0.0.1", &["--tls-port", "0", "--no-http"]);
+
+    let report = kneetap(&["report", &format!("https://{}", server.address)]);
+
+    assert_eq!(report.status.code(), Some(1));
+}

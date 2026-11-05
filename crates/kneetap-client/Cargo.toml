@@ -13,8 +13,10 @@ workspace = true
 
 [dependencies]
 kneetap-api.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["http2", "rustls-no-provider"] }
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
 serde_json.workspace = true
+webpki-roots.workspace = true
 
 [dev-dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }

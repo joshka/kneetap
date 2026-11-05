@@ -48,6 +48,69 @@ pub struct Report {
 
     /// How [`body`](Self::body) is encoded.
     pub body_encoding: BodyEncoding,
+
+    /// The TLS session, or `None` for a plain connection.
+    pub tls: Option<TlsReport>,
+}
+
+/// What was negotiated on a TLS connection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsReport {
+    /// The protocol version, such as `TLSv1_3`.
+    pub version: String,
+
+    /// The cipher suite.
+    pub cipher: String,
+
+    /// The application protocol chosen during the handshake.
+    pub alpn: Option<String>,
+
+    /// Where the server's certificate came from.
+    pub certificate_source: CertificateSource,
+
+    /// How far the client's certificate was trusted.
+    pub client_verification: ClientVerification,
+
+    /// The subject of each certificate the client presented.
+    pub client_subjects: Vec<String>,
+}
+
+/// Where a server's certificate came from.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CertificateSource {
+    /// The operator supplied it.
+    File,
+
+    /// The server generated a self-signed one.
+    Generated,
+}
+
+/// How far a client certificate was trusted.
+///
+/// `Unverified` subjects are only claims, so never use them for authorization.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClientVerification {
+    /// The client presented no certificate.
+    Absent,
+
+    /// The certificate chains to a configured authority.
+    Verified,
+
+    /// The client proved it holds the key, but nothing vouches for the certificate.
+    Unverified,
+}
+
+impl Display for ClientVerification {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Absent => "absent",
+            Self::Verified => "verified",
+            Self::Unverified => "unverified",
+        })
+    }
 }
 
 /// How a report carries a request body, which may not be valid text.
@@ -76,6 +139,16 @@ impl Display for Report {
             writeln!(f, "IP: {address}")?;
         }
         writeln!(f, "RemoteAddr: {}", self.remote_addr)?;
+        if let Some(tls) = &self.tls {
+            let verification = tls.client_verification;
+            writeln!(f, "TLS: {} {} ({verification})", tls.version, tls.cipher)?;
+            if let Some(alpn) = &tls.alpn {
+                writeln!(f, "ALPN: {alpn}")?;
+            }
+            for subject in &tls.client_subjects {
+                writeln!(f, "Client subject: {subject}")?;
+            }
+        }
         if let Some(environment) = &self.environment {
             writeln!(f, "Environment:")?;
             for line in environment {
@@ -114,6 +187,7 @@ mod tests {
             headers: BTreeMap::from([("accept".to_owned(), vec!["*/*".to_owned()])]),
             body: String::new(),
             body_encoding: BodyEncoding::Text,
+            tls: None,
         }
     }
 
@@ -124,6 +198,34 @@ mod tests {
         Hostname: web-1
         IP: 10.0.0.5
         RemoteAddr: 10.0.0.9:4000
+        GET /a?b=c HTTP/2.0
+          host: example.test
+          accept: */*
+        ");
+    }
+
+    #[test]
+    fn text_shows_the_negotiated_tls_session() {
+        let report = Report {
+            tls: Some(TlsReport {
+                version: "TLSv1_3".to_owned(),
+                cipher: "TLS13_AES_128_GCM_SHA256".to_owned(),
+                alpn: Some("h2".to_owned()),
+                certificate_source: CertificateSource::Generated,
+                client_verification: ClientVerification::Unverified,
+                client_subjects: vec!["CN=client".to_owned()],
+            }),
+            ..report()
+        };
+
+        insta::assert_snapshot!(report, @r"
+        Name: blue
+        Hostname: web-1
+        IP: 10.0.0.5
+        RemoteAddr: 10.0.0.9:4000
+        TLS: TLSv1_3 TLS13_AES_128_GCM_SHA256 (unverified)
+        ALPN: h2
+        Client subject: CN=client
         GET /a?b=c HTTP/2.0
           host: example.test
           accept: */*

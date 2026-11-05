@@ -12,6 +12,7 @@ pub struct Error {
 #[derive(Debug)]
 enum ErrorKind {
     Build,
+    Tls,
     Request(String),
     Decode(String),
     TooLarge(String),
@@ -23,6 +24,10 @@ enum ErrorKind {
 impl Error {
     pub(crate) fn build(source: reqwest::Error) -> Self {
         Self::new(ErrorKind::Build, Some(source.into()))
+    }
+
+    pub(crate) fn tls(source: impl Into<Box<dyn error::Error + Send + Sync>>) -> Self {
+        Self::new(ErrorKind::Tls, Some(source.into()))
     }
 
     pub(crate) fn request(url: &str, source: reqwest::Error) -> Self {
@@ -73,6 +78,7 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match &self.kind {
             ErrorKind::Build => write!(f, "failed to build the client"),
+            ErrorKind::Tls => write!(f, "failed to set up TLS"),
             ErrorKind::Request(url) => write!(f, "request to {url} failed"),
             ErrorKind::Decode(url) => write!(f, "{url} didn't return a report"),
             ErrorKind::TooLarge(url) => write!(f, "{url} returned too much data for a report"),

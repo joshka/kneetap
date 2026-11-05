@@ -17,25 +17,35 @@ base64 = { workspace = true, features = ["std"] }
 futures-util.workspace = true
 hostname.workspace = true
 humantime.workspace = true
+hyper = { workspace = true, features = ["http1", "http2", "server"] }
+hyper-util = { workspace = true, features = ["http1", "http2", "server-auto", "service", "tokio"] }
 if-addrs.workspace = true
 itertools.workspace = true
 kneetap-api = { workspace = true, features = ["grpc"] }
 mime.workspace = true
+rcgen.workspace = true
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["net", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "time"] }
+tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
+tokio-util = { workspace = true, features = ["rt"] }
 tonic = { workspace = true, features = ["router", "server"] }
 tonic-health.workspace = true
 tonic-reflection = { workspace = true, features = ["server"] }
+tower = { workspace = true, features = ["util"] }
 url.workspace = true
+x509-parser.workspace = true
 
 [dev-dependencies]
+hyper = { workspace = true, features = ["client"] }
 insta = { workspace = true, features = ["json"] }
+kneetap-client.workspace = true
 proptest = { workspace = true, features = ["std"] }
 reqwest.workspace = true
 rstest.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util"] }
 futures-util = { workspace = true, features = ["sink"] }
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 tonic = { workspace = true, features = ["channel"] }
-tower = { workspace = true, features = ["util"] }

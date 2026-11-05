@@ -1,10 +1,11 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use kneetap_client::Client;
-use kneetap_server::Server;
+use kneetap_client::{Client, ClientBuilder};
+use kneetap_server::{Server, TlsConfig};
 
 /// Command-line arguments.
 #[derive(Debug, Parser)]
@@ -47,6 +48,62 @@ struct Serve {
     /// Permit browsers to connect to `/echo` from any origin
     #[arg(long)]
     allow_any_ws_origin: bool,
+
+    /// Also serve HTTPS on this port
+    #[arg(long)]
+    tls_port: Option<u16>,
+
+    /// Don't serve plain HTTP
+    #[arg(long, requires = "tls_port")]
+    no_http: bool,
+
+    /// TLS certificate chain in PEM format, instead of a generated one
+    #[arg(long, requires_all = ["key", "tls_port"])]
+    cert: Option<PathBuf>,
+
+    /// TLS private key in PEM format
+    #[arg(long, requires = "cert")]
+    key: Option<PathBuf>,
+
+    /// Authorities in PEM format; HTTPS clients must present a certificate they signed
+    #[arg(long, requires = "tls_port")]
+    cacert: Option<PathBuf>,
+}
+
+/// How a client command connects to a server.
+#[derive(Debug, Args)]
+struct ClientTls {
+    /// Accept any server certificate, such as a generated one
+    #[arg(long, conflicts_with = "cacert")]
+    insecure: bool,
+
+    /// Trust only the authorities in this PEM file
+    #[arg(long)]
+    cacert: Option<PathBuf>,
+
+    /// Client certificate chain in PEM format
+    #[arg(long, requires = "key")]
+    cert: Option<PathBuf>,
+
+    /// Client private key in PEM format
+    #[arg(long, requires = "cert")]
+    key: Option<PathBuf>,
+}
+
+impl ClientTls {
+    /// Adds these options to a client, which reads the files when it's built.
+    fn apply(&self, mut builder: ClientBuilder) -> ClientBuilder {
+        if self.insecure {
+            builder = builder.danger_accept_invalid_certs();
+        }
+        if let Some(path) = &self.cacert {
+            builder = builder.root_certificates_file(path);
+        }
+        if let (Some(certificate), Some(key)) = (&self.cert, &self.key) {
+            builder = builder.identity_files(certificate, key);
+        }
+        builder
+    }
 }
 
 #[derive(Debug, Args)]
@@ -66,6 +123,9 @@ struct Healthcheck {
     /// Longest the whole check may take
     #[arg(long, default_value = "5s", value_parser = humantime::parse_duration)]
     timeout: Duration,
+
+    #[command(flatten)]
+    tls: ClientTls,
 }
 
 #[derive(Debug, Args)]
@@ -76,6 +136,9 @@ struct ReportArgs {
     /// Print JSON instead of text
     #[arg(long)]
     json: bool,
+
+    #[command(flatten)]
+    tls: ClientTls,
 }
 
 /// Runs the command line of either binary.
@@ -103,7 +166,10 @@ fn block_on(command: impl Future<Output = Result<()>>) -> Result<()> {
 }
 
 async fn run_healthcheck(check: Healthcheck) -> Result<()> {
-    let client = Client::builder().timeout(check.timeout).build()?;
+    let client = check
+        .tls
+        .apply(Client::builder().timeout(check.timeout))
+        .build()?;
     let probe = async {
         if let Some(url) = &check.url {
             client.check_health(url).await
@@ -129,7 +195,7 @@ fn probe_target(bind: Option<IpAddr>, port: u16) -> SocketAddr {
 }
 
 async fn run_report(args: ReportArgs) -> Result<()> {
-    let client = Client::builder().build()?;
+    let client = args.tls.apply(Client::builder()).build()?;
     let url = format!("{}/api", args.url.trim_end_matches('/'));
     let report = client.report(&url).await?;
     if args.json {
@@ -152,10 +218,18 @@ fn run_server(serve: &Serve) -> Result<()> {
     if let Some(name) = &serve.name {
         builder = builder.name(name);
     }
-    let server = builder
-        .bind((serve.bind, serve.port))
-        .with_context(|| format!("couldn't listen on {}:{}", serve.bind, serve.port))?;
-    println!("listening on http://{}", server.local_addr());
+    if !serve.no_http {
+        builder = builder.http_listener(listen(serve.bind, serve.port)?);
+    }
+    if let Some(port) = serve.tls_port {
+        builder = builder
+            .https_listener(listen(serve.bind, port)?)
+            .tls(tls_config(serve));
+    }
+    let server = builder.build()?;
+    for url in server.urls() {
+        println!("listening on {url}");
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -182,6 +256,23 @@ fn printable(text: &str) -> String {
     output
 }
 
+/// Binds a socket, naming the address in the error because a server may bind several.
+fn listen(address: IpAddr, port: u16) -> Result<TcpListener> {
+    TcpListener::bind((address, port))
+        .with_context(|| format!("couldn't listen on {address}:{port}"))
+}
+
+fn tls_config(serve: &Serve) -> TlsConfig {
+    let tls = match (&serve.cert, &serve.key) {
+        (Some(certificate), Some(key)) => TlsConfig::files(certificate, key),
+        _ => TlsConfig::generated(),
+    };
+    match &serve.cacert {
+        Some(path) => tls.client_ca(path),
+        None => tls,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
@@ -197,6 +288,15 @@ mod tests {
     #[test]
     fn command_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn insecure_refuses_a_cacert_it_would_ignore() {
+        let arguments = ["kneetap", "report", "--insecure", "--cacert", "ca.pem"];
+
+        let error = Cli::try_parse_from(arguments).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[rstest]
