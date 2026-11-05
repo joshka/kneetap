@@ -1,0 +1,5 @@
+[global]
+exclude = ["CLAUDE.md", "target", "work"]
+
+[MD013]
+line-length = 100

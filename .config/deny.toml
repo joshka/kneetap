@@ -1,0 +1,14 @@
+# Configuration for https://github.com/EmbarkStudios/cargo-deny
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-git = "deny"
+unknown-registry = "deny"
