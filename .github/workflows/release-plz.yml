@@ -1,0 +1,28 @@
+name: Release PR
+
+# Prepares a release PR with the next version and changelog. It only runs when asked.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  release-pr:
+    if: ${{ github.repository_owner == 'joshka' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

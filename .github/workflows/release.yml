@@ -1,0 +1,122 @@
+name: Release
+
+# Builds and publishes binaries and images for a tag. It only runs when asked, and must be started
+# on the tag itself so that provenance names the commit that was built.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  binaries:
+    if: ${{ github.ref_type == 'tag' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl }
+          - { os: ubuntu-latest, target: armv7-unknown-linux-musleabihf }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        if: runner.os == 'Linux'
+        with:
+          tool: cross
+      - run: cross build --release --locked --target "$TARGET" --package kneetap
+        if: runner.os == 'Linux'
+      - run: cargo build --release --locked --target "$TARGET" --package kneetap
+        if: runner.os != 'Linux'
+      - name: Package binaries and checksums
+        shell: bash
+        run: |
+          mkdir -p dist/package
+          cp "target/$TARGET/release/kneetap"* "target/$TARGET/release/kt"* dist/package/
+          rm -f dist/package/*.d
+          cp LICENSE-APACHE LICENSE-MIT README.md dist/package/
+          tar -czf "dist/kneetap-$TARGET.tar.gz" -C dist/package .
+          cd dist
+          shasum -a 256 ./*.tar.gz > "SHA256SUMS-$TARGET"
+      - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: dist/package
+          format: spdx-json
+          output-file: dist/kneetap-${{ matrix.target }}.spdx.json
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaries-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS-*
+            dist/*.spdx.json
+          if-no-files-found: error
+
+  # Waits for the binaries, so that a failed target can't leave a published image without a release.
+  image:
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          tags: type=semver,pattern={{version}},value=${{ github.ref_name }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+
+  # Runs last, so that a failed target can't leave a public release with assets missing.
+  publish:
+    needs: [binaries, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: binaries-*
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*

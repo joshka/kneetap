@@ -45,7 +45,7 @@ x509-parser.workspace = true
 h2.workspace = true
 hyper = { workspace = true, features = ["client"] }
 insta = { workspace = true, features = ["json"] }
-kneetap-client.workspace = true
+kneetap-client = { path = "../kneetap-client" }
 proptest = { workspace = true, features = ["std"] }
 reqwest.workspace = true
 rstest.workspace = true
