@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use crate::health::{self, Health};
 use crate::host::Host;
+use crate::status::Status;
 use crate::{data, echo, report};
 
 /// Settings and host identity that every request reads.
@@ -27,6 +28,7 @@ pub struct Context {
     pub health: Health,
     pub allow_any_ws_origin: bool,
     pub max_ws_message_size: usize,
+    pub status: Status,
 }
 
 /// The parameters `/` and `/api` own. Any others belong to the client and are only reported.
@@ -194,7 +196,8 @@ fn report_response(
         .expect("the listener attaches the peer address")
         .0;
     let name = context.name.clone();
-    let report = report::build(name, &context.host, peer, environment, parts, bytes);
+    let mut report = report::build(name, &context.host, peer, environment, parts, bytes);
+    report.server_status = context.status.read().clone();
     let is_api = parts.uri.path() == "/api";
     // Repeated fields mean the same as one comma-separated list (RFC 9110 section 5.3).
     let accept = parts
@@ -300,6 +303,7 @@ mod tests {
             health: Health::new(tonic_health::server::health_reporter().0).await,
             allow_any_ws_origin: false,
             max_ws_message_size: 1024,
+            status: Status::default(),
         }
     }
 
@@ -362,6 +366,9 @@ mod tests {
           "method": "GET",
           "name": "blue",
           "remoteAddr": "10.0.0.9:4000",
+          "serverStatus": {
+            "reloadError": null
+          },
           "target": "/api",
           "tls": null
         }

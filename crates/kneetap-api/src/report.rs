@@ -51,6 +51,18 @@ pub struct Report {
 
     /// The TLS session, or `None` for a plain connection.
     pub tls: Option<TlsReport>,
+
+    /// Problems the server is working around.
+    #[serde(default)]
+    pub server_status: ServerStatus,
+}
+
+/// Problems a server is working around while it keeps serving.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerStatus {
+    /// Why the last certificate reload was rejected. The previous certificate stays in use.
+    pub reload_error: Option<String>,
 }
 
 /// What was negotiated on a TLS connection.
@@ -149,6 +161,9 @@ impl Display for Report {
                 writeln!(f, "Client subject: {subject}")?;
             }
         }
+        if let Some(error) = &self.server_status.reload_error {
+            writeln!(f, "Reload error: {error}")?;
+        }
         if let Some(environment) = &self.environment {
             writeln!(f, "Environment:")?;
             for line in environment {
@@ -188,6 +203,7 @@ mod tests {
             body: String::new(),
             body_encoding: BodyEncoding::Text,
             tls: None,
+            server_status: ServerStatus::default(),
         }
     }
 
@@ -250,6 +266,21 @@ mod tests {
           host: example.test
           accept: */*
         ");
+    }
+
+    #[test]
+    fn a_rejected_reload_is_visible_in_text() {
+        let report = Report {
+            server_status: ServerStatus {
+                reload_error: Some("bad key".to_owned()),
+            },
+            ..report()
+        };
+
+        assert_eq!(
+            report.to_string().lines().nth(4),
+            Some("Reload error: bad key")
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@ use axum::http::request::Parts;
 use axum::http::{HeaderValue, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use kneetap_api::{BodyEncoding, Report, TlsReport};
+use kneetap_api::{BodyEncoding, Report, ServerStatus, TlsReport};
 
 use crate::host::Host;
 
@@ -53,6 +53,7 @@ pub fn build(
         body,
         body_encoding,
         tls: parts.extensions.get::<TlsReport>().cloned(),
+        server_status: ServerStatus::default(),
     }
 }
 

@@ -1,5 +1,6 @@
 use std::fmt::{self, Debug, Formatter};
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -56,11 +57,35 @@ impl TlsConfig {
     }
 }
 
+impl TlsConfig {
+    /// Identifies the current version of each file, to notice when one changes.
+    ///
+    /// Hashes contents because a replacement can keep the size and modification time, and a missed
+    /// authority change would keep trusting clients it should refuse. Reading follows symbolic
+    /// links, so this sees the atomic link swaps Kubernetes uses. Only hashes are kept, so key
+    /// material stays inside rustls.
+    pub(crate) fn file_versions(&self) -> Vec<Option<u64>> {
+        let (certificate, key) = self.files.as_ref().map(|(c, k)| (c, k)).unzip();
+        [certificate, key, self.client_ca.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|path| {
+                let mut hasher = DefaultHasher::new();
+                fs::read(path).ok()?.hash(&mut hasher);
+                Some(hasher.finish())
+            })
+            .collect()
+    }
+}
+
 /// Validated TLS state, ready to accept connections.
 pub struct Material {
     pub config: Arc<ServerConfig>,
     source: CertificateSource,
     requires_client_ca: bool,
+
+    /// A generated identity, kept so that a reload doesn't change it. It has no file to reread.
+    generated: Option<Identity>,
 }
 
 impl Debug for Material {
@@ -74,16 +99,33 @@ impl Debug for Material {
 
 impl Material {
     /// Loads and validates everything a handshake needs.
+    pub fn load(tls: &TlsConfig) -> Result<Self, Error> {
+        Self::build(tls, None)
+    }
+
+    /// Builds a replacement, which is complete and valid before anything uses it.
+    pub fn reload(&self, tls: &TlsConfig) -> Result<Self, Error> {
+        Self::build(tls, self.generated.as_ref())
+    }
+
+    /// Builds the configuration, reusing `generated` rather than making a new identity.
     ///
     /// The client policy is built first, so that no fallback for the server's own certificate can
     /// run before a broken authority has failed closed.
-    pub fn load(tls: &TlsConfig) -> Result<Self, Error> {
+    fn build(tls: &TlsConfig, generated: Option<&Identity>) -> Result<Self, Error> {
         let verifier = client_verifier(tls.client_ca.as_deref())?;
-        let (source, identity) = match &tls.files {
-            Some((certificate, key)) => (CertificateSource::File, read_identity(certificate, key)),
-            None => (CertificateSource::Generated, generate_identity()),
+        let identity = match (&tls.files, generated) {
+            (Some((certificate, key)), _) => read_identity(certificate, key),
+            (None, Some((chain, key))) => Ok((chain.clone(), key.clone_key())),
+            (None, None) => generate_identity(),
         };
         let (chain, key) = identity.map_err(Error::tls_identity)?;
+        let (source, generated) = if tls.files.is_some() {
+            (CertificateSource::File, None)
+        } else {
+            let identity = (chain.clone(), key.clone_key());
+            (CertificateSource::Generated, Some(identity))
+        };
         let mut config = ServerConfig::builder_with_provider(provider())
             .with_safe_default_protocol_versions()
             .map_err(Error::tls_identity)?
@@ -95,6 +137,7 @@ impl Material {
             config: Arc::new(config),
             source,
             requires_client_ca: tls.client_ca.is_some(),
+            generated,
         })
     }
 
@@ -264,6 +307,22 @@ mod tests {
         let error = Material::load(&tls).unwrap_err();
 
         assert!(error.is_tls_identity(), "{error}");
+    }
+
+    #[test]
+    fn a_replacement_with_the_same_size_and_time_is_a_new_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ca.pem");
+        fs::write(&path, "first").unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let tls = TlsConfig::generated().client_ca(&path);
+        let before = tls.file_versions();
+
+        fs::write(&path, "other").unwrap();
+        let file = fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(modified).unwrap();
+
+        assert_ne!(tls.file_versions(), before);
     }
 
     #[test]

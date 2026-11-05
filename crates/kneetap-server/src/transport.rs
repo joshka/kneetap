@@ -18,6 +18,7 @@ use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
+use crate::reload::Certificates;
 use crate::tls::Material;
 
 /// How long to wait after a failed accept, so running out of file descriptors can't spin the loop.
@@ -68,13 +69,12 @@ impl Listener {
 pub async fn run<F>(
     listeners: Vec<Listener>,
     app: Router,
-    tls: Option<Material>,
+    tls: Option<Arc<Certificates>>,
     shutdown: F,
 ) -> io::Result<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let tls = tls.map(Arc::new);
     let stop = CancellationToken::new();
     let mut tasks = JoinSet::new();
     for listener in listeners {
@@ -93,7 +93,7 @@ where
 async fn accept(
     socket: tokio::net::TcpListener,
     app: Router,
-    tls: Option<Arc<Material>>,
+    tls: Option<Arc<Certificates>>,
     stop: CancellationToken,
 ) {
     let mut connections = JoinSet::new();
@@ -106,11 +106,13 @@ async fn accept(
             tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
             continue;
         };
+        // A handshake uses the certificates current when its connection arrived.
+        let material = tls.as_ref().map(|tls| tls.current());
         connections.spawn(connection(
             stream,
             peer,
             app.clone(),
-            tls.clone(),
+            material,
             stop.clone(),
         ));
         while connections.try_join_next().is_some() {}

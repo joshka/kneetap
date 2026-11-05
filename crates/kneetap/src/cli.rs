@@ -5,6 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use kneetap_client::{Client, ClientBuilder};
+#[cfg(unix)]
+use kneetap_server::ReloadHandle;
 use kneetap_server::{Server, TlsConfig};
 
 /// Command-line arguments.
@@ -68,6 +70,11 @@ struct Serve {
     /// Authorities in PEM format; HTTPS clients must present a certificate they signed
     #[arg(long, requires = "tls_port")]
     cacert: Option<PathBuf>,
+
+    /// How often to check TLS files for changes; `0s` turns this off
+    #[arg(long, requires = "tls_port", default_value = "30s")]
+    #[arg(value_parser = humantime::parse_duration)]
+    tls_reload_interval: Duration,
 }
 
 /// How a client command connects to a server.
@@ -208,7 +215,7 @@ async fn run_report(args: ReportArgs) -> Result<()> {
 
 /// Binds before starting the runtime, so a failure to bind is reported without starting threads.
 fn run_server(serve: &Serve) -> Result<()> {
-    let mut builder = Server::builder();
+    let mut builder = Server::builder().reload_interval(serve.tls_reload_interval);
     if serve.enable_env {
         builder = builder.enable_env();
     }
@@ -230,15 +237,20 @@ fn run_server(serve: &Serve) -> Result<()> {
     for url in server.urls() {
         println!("listening on {url}");
     }
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(server.serve(async {
-            // If signals are unavailable, the server keeps running until it's killed.
-            if tokio::signal::ctrl_c().await.is_err() {
-                std::future::pending::<()>().await;
-            }
-        }))?;
+        .build()?;
+    // Claiming `SIGHUP` replaces its default of ending the process, so only do that if it's useful.
+    #[cfg(unix)]
+    if server.urls().iter().any(|url| url.starts_with("https:")) {
+        runtime.spawn(forward_hangups(server.reload_handle()));
+    }
+    runtime.block_on(server.serve(async {
+        // If signals are unavailable, the server keeps running until it's killed.
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }))?;
     Ok(())
 }
 
@@ -254,6 +266,19 @@ fn printable(text: &str) -> String {
         }
     }
     output
+}
+
+/// Treats `SIGHUP` as a request to reread certificates, as daemons conventionally do.
+#[cfg(unix)]
+async fn forward_hangups(reload: ReloadHandle) {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let Ok(mut hangups) = signal(SignalKind::hangup()) else {
+        return;
+    };
+    while hangups.recv().await.is_some() {
+        reload.reload();
+    }
 }
 
 /// Binds a socket, naming the address in the error because a server may bind several.
