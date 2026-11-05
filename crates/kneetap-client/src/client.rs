@@ -7,6 +7,7 @@ use reqwest::redirect::Policy;
 use crate::Error;
 use crate::tls::{self, Trust};
 
+/// Long enough for a slow server, short enough for a health probe to give a useful answer.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The largest report read from a server, which needn't be trusted to stop sending.
@@ -76,6 +77,7 @@ impl Client {
         Err(last_error)
     }
 
+    /// Sends a `GET`. Any response counts as success here, because callers judge its status.
     async fn send(&self, url: &str) -> Result<reqwest::Response, Error> {
         let response = self.http.get(url).send().await;
         response.map_err(|source| Error::request(url, source))

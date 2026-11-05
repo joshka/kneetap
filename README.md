@@ -1,9 +1,17 @@
 # kneetap
 
 kneetap is a small server that reports which instance answered a request and what that request
-looked like when it arrived.
+looked like when it arrived. Put it behind a proxy, load balancer, or service mesh to see what
+actually reaches a backend.
 
-It's under active development. To try it:
+- **Many protocols, same ports:** reports over HTTP/1.1, HTTP/2, TLS with client certificates, and
+  gRPC, which leaves out TLS details, plus a WebSocket echo.
+- **Safe to leave running:** connections and requests are bounded, it drops root, and the
+  environment stays private unless you opt in.
+- **Starts whatever happens:** it works around bad ports and certificates, and says what it did.
+- **Small:** a single binary, a `scratch` image of about 7 MB, or a library for your own tests.
+
+## Try it
 
 ```sh
 cargo run -p kneetap -- serve --port 8080 --no-tls
@@ -49,7 +57,7 @@ kneetap report https://localhost:8443 --insecure
 
 Without `--cacert`, a client certificate is optional and reported as `unverified`, which means
 nothing vouches for it. With `--cacert`, HTTPS clients must present a certificate it signed, and a
-broken bundle stops the server rather than accepting any client.
+broken bundle keeps HTTPS off rather than accepting any client.
 
 Certificate files are checked every 30 seconds (`--tls-reload-interval`), and `SIGHUP` rereads them
 at once. A replacement is validated before it's used. If it's rejected, the server keeps its
@@ -59,8 +67,9 @@ working certificate and reports the failure in `serverStatus.reloadError`.
 
 Connections and requests are bounded, so stalled and abandoned connections can't keep capacity for
 long. These limits are shared across clients, so a busy client can still use them up. Long-lived
-streams hold capacity while they stay open: a WebSocket counts as a connection, and a gRPC health
-watch counts as a request. Run `kneetap serve --help` to change any of these.
+streams hold capacity while they stay open, with no idle timeout: a WebSocket counts as a
+connection, and a gRPC health watch counts as a request. Run `kneetap serve --help` to change any of
+these.
 
 | Limit | Default |
 | --- | --- |
@@ -125,7 +134,33 @@ On `SIGTERM` or an interrupt, kneetap reports unhealthy, stops accepting connect
 WebSockets, and lets requests in progress finish for up to `--shutdown-timeout`, 10 seconds by
 default.
 
-See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
+## Related projects
+
+- [whoami](https://github.com/traefik/whoami) is the closest project, and inspired this one. kneetap
+  covers what it offers and adds more TLS detail, limits, and degraded startup. Moving to kneetap
+  means using `--port` rather than `-port`, a separate `--tls-port` for HTTPS, `--enable-env` for
+  `?env=true`, and JSON for `/health` updates. `KNEETAP_PORT` and `KNEETAP_NAME` replace
+  `WHOAMI_PORT_NUMBER` and `WHOAMI_NAME`. gRPC clients call `kneetap.v1.Reporter` rather than
+  `whoami.Whoami`, with `GetReport` and `Ping` in place of `Whoami` and `Bench`. In `/api` reports,
+  `addresses`, `target`, and an `environment` array replace `ip`, `url`, and the `environ` object.
+  Invalid parameters return `400`, and header names are lowercase. A TLS-only whoami needs
+  `--no-http --tls-port`, because `--port` alone leaves plain HTTP on without client certificates.
+- [go-httpbin](https://github.com/mccutchen/go-httpbin) is a port of httpbin, with a broad set of
+  endpoints for testing HTTP clients.
+- [http-https-echo](https://github.com/mendhak/docker-http-https-echo) echoes requests as JSON and
+  logs them, with options for changing the response.
+- [echo-server](https://github.com/jmalloc/echo-server) echoes HTTP, WebSocket, and server-sent
+  events for testing proxies.
+- [Echo-Server](https://github.com/Ealenn/Echo-Server) lets clients control its responses through
+  headers and query parameters.
+
+## Learn more
+
+- [Architecture](docs/architecture.md)
+- [Decisions](docs/adr)
+- [Roadmap](docs/roadmap.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
 
 ## License
 

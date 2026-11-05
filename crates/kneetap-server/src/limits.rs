@@ -135,6 +135,8 @@ impl Activity {
         RequestGuard(self.clone())
     }
 
+    /// Reads the last activity. A panic can't leave an `Instant` half-written, so poison is
+    /// ignored.
     fn last(&self) -> Instant {
         *self.last.lock().unwrap_or_else(PoisonError::into_inner)
     }

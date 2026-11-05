@@ -267,6 +267,8 @@ fn block_on(command: impl Future<Output = Result<()>>) -> Result<()> {
     result
 }
 
+/// Probes a given URL, or finds the local server. A deadline covers the whole check, because a
+/// probe that tries several ports would otherwise take several timeouts.
 async fn run_healthcheck(check: Healthcheck) -> Result<()> {
     let builder = check.tls.apply(Client::builder().timeout(check.timeout));
     // A local server's certificate is usually generated, and this machine needs no proof of who it
@@ -319,6 +321,8 @@ impl Endpoint {
         endpoint
     }
 
+    /// Returns whether the command was told nothing, so it should look for a running server
+    /// instead.
     const fn is_unset(&self) -> bool {
         self.bind.is_none()
             && self.port.is_none()
@@ -382,6 +386,7 @@ fn probe_target(bind: Option<IpAddr>, port: u16) -> SocketAddr {
     SocketAddr::new(address, port)
 }
 
+/// Prints a report. JSON escapes control characters itself, so only text needs [`printable`].
 async fn run_report(args: ReportArgs) -> Result<()> {
     let client = args.tls.apply(Client::builder()).build()?;
     let url = format!("{}/api", args.url.trim_end_matches('/'));
@@ -553,6 +558,7 @@ fn usable_tls(serve: &Serve, degradations: &mut Vec<String>) -> Result<Option<Tl
     Ok(None)
 }
 
+/// Translates the flags. `--cert` requires `--key`, so a partial pair can't reach this point.
 fn tls_config(serve: &Serve) -> TlsConfig {
     let tls = match (&serve.cert, &serve.key) {
         (Some(certificate), Some(key)) => TlsConfig::files(certificate, key),
