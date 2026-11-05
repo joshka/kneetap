@@ -72,6 +72,11 @@ watch counts as a request. Run `kneetap serve --help` to change any of these.
 | `/data` response | 10 GB |
 | `?wait=` delay | 5 minutes |
 
+## Logs
+
+Logs go to stderr, as text or with `--log-format json`. `--verbose` adds a line per request, and
+`RUST_LOG` takes priority over it.
+
 ## Stopping
 
 On `SIGTERM` or an interrupt, kneetap reports unhealthy, stops accepting connections, closes

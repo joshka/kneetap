@@ -4,6 +4,8 @@
   when those don't decide it. These are defaults; choose the order that reduces jumping around.
 - Use `foo.rs` with a `foo/` directory, never `mod.rs`. Clippy enforces this.
 - Group imports by module, which rustfmt enforces. Use a qualified path when it reads better.
+- Name log events `<component>.<operation>.<outcome>` and put the details in fields. Libraries emit
+  events but never install a subscriber.
 - Suppress a lint with `#[expect(lint, reason = "...")]`, never `#[allow]`, except on generated code.
 - Don't take `bool` parameters, which read as a bare `true` at the call site. Split the function, or
   pass the value the decision comes from. Clippy enforces this.

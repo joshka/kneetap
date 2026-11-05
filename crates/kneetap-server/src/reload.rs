@@ -53,8 +53,12 @@ impl Certificates {
             Ok(material) => {
                 self.current.store(Arc::new(material));
                 self.status.set_reload_error(None);
+                tracing::info!("tls.reload.applied");
             }
-            Err(error) => self.status.set_reload_error(Some(describe(&error))),
+            Err(error) => {
+                tracing::warn!(%error, "tls.reload.rejected");
+                self.status.set_reload_error(Some(describe(&error)));
+            }
         }
     }
 }

@@ -37,6 +37,7 @@ tonic = { workspace = true, features = ["router", "server"] }
 tonic-health.workspace = true
 tonic-reflection = { workspace = true, features = ["server"] }
 tower = { workspace = true, features = ["util"] }
+tracing = { workspace = true, features = ["std"] }
 url.workspace = true
 x509-parser.workspace = true
 
