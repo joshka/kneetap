@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::body::{self, Body, Bytes};
+use axum::body::{self, Body, Bytes, HttpBody};
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -19,7 +19,7 @@ pub struct Context {
     pub max_body_size: usize,
 }
 
-/// Builds the service.
+/// Builds the HTTP service.
 ///
 /// Everything goes through one fallback rather than per-path routes, because unknown paths and any
 /// method are valid input: they belong to whatever application is being tested.
@@ -27,15 +27,24 @@ pub fn router(context: Arc<Context>) -> Router {
     Router::new().fallback(handle).with_state(context)
 }
 
+/// Handles every request, removing the body from `HEAD` responses after routing so that their
+/// headers match the `GET` they stand in for.
 async fn handle(State(context): State<Arc<Context>>, request: Request) -> Response {
     let head_only = request.method() == Method::HEAD;
     let mut response = dispatch(&context, request).await;
     if head_only {
+        // An empty body would otherwise be announced as length 0.
+        if let Some(length) = response.body().size_hint().exact() {
+            response
+                .headers_mut()
+                .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+        }
         *response.body_mut() = Body::empty();
     }
     response
 }
 
+/// Chooses a response by path.
 async fn dispatch(context: &Context, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let path = parts.uri.path();
@@ -59,11 +68,12 @@ fn disallowed(path: &str, method: &Method) -> Option<&'static str> {
         _ if method == Method::CONNECT => "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE",
         _ => return None,
     };
-    let allowed =
-        method != Method::CONNECT && allow.split(", ").any(|name| name == method.as_str());
+    let allowed = allow.split(", ").any(|name| name == method.as_str());
     (!allowed).then_some(allow)
 }
 
+/// Reports the request as text or JSON. Reports are never cached, because each one describes a
+/// single request.
 fn report_response(context: &Context, parts: &Parts, bytes: &Bytes) -> Response {
     let peer = parts
         .extensions
@@ -73,14 +83,14 @@ fn report_response(context: &Context, parts: &Parts, bytes: &Bytes) -> Response 
     let report = report::build(context.name.clone(), &context.host, peer, parts, bytes);
     let is_api = parts.uri.path() == "/api";
     // Repeated fields mean the same as one comma-separated list (RFC 9110 section 5.3).
-    let accept: Vec<_> = parts
+    let accept = parts
         .headers
         .get_all(header::ACCEPT)
         .iter()
         .filter_map(|value| value.to_str().ok())
-        .collect();
-    let accept = (!accept.is_empty()).then(|| accept.join(","));
-    let mut response = if is_api || prefers_json(accept.as_deref()) {
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut response = if is_api || prefers_json(&accept) {
         let json = serde_json::to_vec(&report).expect("a report only holds strings");
         with_type(StatusCode::OK, "application/json", json.into())
     } else {
@@ -99,12 +109,10 @@ fn report_response(context: &Context, parts: &Parts, bytes: &Bytes) -> Response 
 /// Selects JSON only when the client ranks it above text.
 ///
 /// This never refuses a request: the server's job is to report it, whatever the client accepts.
-fn prefers_json(accept: Option<&str>) -> bool {
-    accept.is_some_and(|accept| {
-        let (specificity, json) = ranking(accept, "application", "json");
-        let (_, text) = ranking(accept, "text", "plain");
-        specificity == 3 && json > 0.0 && json > text
-    })
+fn prefers_json(accept: &str) -> bool {
+    let (specificity, json) = ranking(accept, "application", "json");
+    let (_, text) = ranking(accept, "text", "plain");
+    specificity == 3 && json > 0.0 && json > text
 }
 
 /// Finds the most specific `Accept` entry matching a media type, as `(specificity, quality)`.
@@ -267,11 +275,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_is_refused_because_reports_cannot_tunnel() {
+        let response = send(request("CONNECT", "/anything", "")).await;
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
     async fn head_keeps_the_status_and_drops_the_body() {
         let response = send(request("HEAD", "/api", "")).await;
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(body_text(response).await, "");
+    }
+
+    #[tokio::test]
+    async fn head_announces_the_length_get_would_send() {
+        let get = send(request("GET", "/bench", "")).await;
+        let head = send(request("HEAD", "/bench", "")).await;
+
+        assert_eq!(
+            head.headers()[header::CONTENT_LENGTH],
+            body_text(get).await.len().to_string()
+        );
     }
 
     #[rstest]
@@ -288,13 +314,32 @@ mod tests {
     }
 
     #[rstest]
-    #[case(Some("application/json;q=0.8, text/plain;q=0.2"), true)]
-    #[case(None, false)]
-    #[case(Some("*/*"), false)]
-    #[case(Some("application/json,text/plain"), false)]
-    #[case(Some("application/xml"), false)]
-    #[case(Some("text/plain;q=0,*/*;q=0"), false)]
-    fn json_requires_an_explicit_preference(#[case] accept: Option<&str>, #[case] json: bool) {
+    #[case("application/json;q=0.8, text/plain;q=0.2", true)]
+    #[case("", false)]
+    #[case("*/*", false)]
+    #[case("application/json,text/plain", false)]
+    #[case("application/xml", false)]
+    #[case("text/plain;q=0,*/*;q=0", false)]
+    fn json_requires_an_explicit_preference(#[case] accept: &str, #[case] json: bool) {
         assert_eq!(prefers_json(accept), json);
+    }
+
+    #[rstest]
+    #[case(&["text/plain;q=0.2", "application/json;q=0.8"], "application/json")]
+    #[case(&["text/plain", "application/json"], "text/plain; charset=utf-8")]
+    #[tokio::test]
+    async fn repeated_accept_headers_count_as_one_list(
+        #[case] values: &[&str],
+        #[case] content_type: &str,
+    ) {
+        let mut request = request("GET", "/", "");
+        for value in values {
+            let value = HeaderValue::from_str(value).unwrap();
+            request.headers_mut().append(header::ACCEPT, value);
+        }
+
+        let response = send(request).await;
+
+        assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
     }
 }

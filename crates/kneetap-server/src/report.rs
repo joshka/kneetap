@@ -9,7 +9,9 @@ use kneetap_api::{BodyEncoding, Report};
 
 use crate::host::Host;
 
-/// Builds the report for one request.
+/// Builds a report from a request's head and its already-read body.
+///
+/// The host comes from the URI when it has an authority, as in HTTP/2, and otherwise from `Host`.
 pub fn build(
     name: Option<String>,
     host: &Host,
