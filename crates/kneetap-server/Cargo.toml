@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 axum = { workspace = true, features = ["http1", "http2", "query", "tokio"] }
 base64 = { workspace = true, features = ["std"] }
+futures-util.workspace = true
 hostname.workspace = true
 humantime.workspace = true
 if-addrs.workspace = true
@@ -26,6 +27,7 @@ tokio = { workspace = true, features = ["net", "time"] }
 
 [dev-dependencies]
 insta = { workspace = true, features = ["json"] }
+proptest = { workspace = true, features = ["std"] }
 reqwest.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util"] }

@@ -8,6 +8,7 @@ use crate::host::Host;
 use crate::routes::{self, Context};
 
 const DEFAULT_MAX_BODY_SIZE: usize = 1 << 20;
+const DEFAULT_MAX_DATA_SIZE: u64 = 10_000_000_000;
 const DEFAULT_MAX_WAIT: Duration = Duration::from_mins(5);
 
 /// A bound server that hasn't started handling requests.
@@ -65,6 +66,7 @@ pub struct ServerBuilder {
     max_body_size: usize,
     max_wait: Duration,
     enable_env: bool,
+    max_data_size: u64,
 }
 
 impl Default for ServerBuilder {
@@ -74,6 +76,7 @@ impl Default for ServerBuilder {
             max_body_size: DEFAULT_MAX_BODY_SIZE,
             max_wait: DEFAULT_MAX_WAIT,
             enable_env: false,
+            max_data_size: DEFAULT_MAX_DATA_SIZE,
         }
     }
 }
@@ -108,6 +111,13 @@ impl ServerBuilder {
         self
     }
 
+    /// Sets the largest response a client can request from `/data`. The default is 10 GB.
+    #[must_use]
+    pub const fn max_data_size(mut self, bytes: u64) -> Self {
+        self.max_data_size = bytes;
+        self
+    }
+
     /// Binds the listening socket without serving yet.
     ///
     /// This is synchronous so a process can bind before starting a runtime, then drop privileges.
@@ -123,6 +133,7 @@ impl ServerBuilder {
             max_body_size: self.max_body_size,
             max_wait: self.max_wait,
             enable_env: self.enable_env,
+            max_data_size: self.max_data_size,
         };
         Ok(Server {
             listener,
