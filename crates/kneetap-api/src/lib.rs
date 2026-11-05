@@ -13,3 +13,11 @@
 mod report;
 
 pub use report::{BodyEncoding, Report};
+
+/// Response header that identifies a kneetap `/health` endpoint.
+///
+/// A probe searching several ports needs this to tell kneetap from another service on one of them.
+pub const HEALTH_HEADER: &str = "x-kneetap-health";
+
+/// The value of [`HEALTH_HEADER`].
+pub const HEALTH_MARKER: &str = "1";

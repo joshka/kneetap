@@ -17,7 +17,14 @@ curl localhost:8080/anything
 | `/` or `/api` with `?wait=2s` | The report, after a delay |
 | `/` or `/api` with `?env=true` | The report with environment variables, if `--enable-env` is set |
 | `/data?size=10&unit=MiB` | Generated data, with range requests and `?attachment=true` |
+| `/health` | The current health status, which `POST` changes |
 | Anything else | The report as text, or JSON if the client prefers it |
+
+To make a replica fail its health checks, for example while testing load balancer failover:
+
+```sh
+curl -H 'content-type: application/json' -d 503 localhost:8080/health
+```
 
 See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
 

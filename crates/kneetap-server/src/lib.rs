@@ -23,6 +23,7 @@
 
 mod data;
 mod error;
+mod health;
 mod host;
 mod report;
 mod routes;
