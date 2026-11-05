@@ -1,0 +1,390 @@
+openapi: 3.1.0
+info:
+  title: kneetap
+  summary: Reports which server answered a request and what it received.
+  version: 0.1.0
+  license:
+    name: MIT OR Apache-2.0
+    identifier: MIT OR Apache-2.0
+paths:
+  /:
+    get:
+      operationId: getReport
+      summary: Report this request
+      description: >-
+        Returns text, ending with the request body, unless the client ranks JSON above text. Any
+        other path behaves the same way, accepts any method except CONNECT, and ignores its query
+        parameters.
+      parameters:
+        - $ref: '#/components/parameters/Wait'
+        - $ref: '#/components/parameters/Env'
+      responses:
+        '200':
+          description: The report.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        '400':
+          $ref: '#/components/responses/InvalidParameter'
+        '403':
+          $ref: '#/components/responses/EnvironmentDisabled'
+        '408':
+          $ref: '#/components/responses/BodyTimedOut'
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+    post:
+      operationId: postReport
+      summary: Report this request and its body
+      description: >-
+        Other methods behave the same way. OpenAPI can't express a path that accepts any method,
+        so this stands in for all of them.
+      parameters:
+        - $ref: '#/components/parameters/Wait'
+        - $ref: '#/components/parameters/Env'
+      requestBody:
+        description: Reported as received, in any format.
+        content:
+          '*/*':
+            schema: {}
+      responses:
+        '200':
+          description: The report.
+          content:
+            text/plain:
+              schema:
+                type: string
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        '400':
+          $ref: '#/components/responses/InvalidParameter'
+        '403':
+          $ref: '#/components/responses/EnvironmentDisabled'
+        '408':
+          $ref: '#/components/responses/BodyTimedOut'
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+  /api:
+    get:
+      operationId: getReportJson
+      summary: Report this request as JSON
+      parameters:
+        - $ref: '#/components/parameters/Wait'
+        - $ref: '#/components/parameters/Env'
+      responses:
+        '200':
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        '400':
+          $ref: '#/components/responses/InvalidParameter'
+        '403':
+          $ref: '#/components/responses/EnvironmentDisabled'
+        '408':
+          $ref: '#/components/responses/BodyTimedOut'
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+  /bench:
+    get:
+      operationId: bench
+      summary: Return a fixed response for load testing
+      responses:
+        '200':
+          description: Always `1`.
+          content:
+            text/plain:
+              schema:
+                type: string
+                const: '1'
+  /data:
+    get:
+      operationId: getData
+      summary: Generate a body of a chosen size
+      description: >-
+        Each 16-byte line of the body states its own offset, so missing or reordered data is easy
+        to spot. Supports single byte ranges and conditional requests.
+      parameters:
+        - name: size
+          in: query
+          description: How many units to return.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 1
+        - name: unit
+          in: query
+          description: >-
+            `B` or `bytes` count single bytes. `KB`, `MB`, `GB`, and `TB` are powers of 1000. `KiB`,
+            `MiB`, `GiB`, and `TiB` are powers of 1024. Case doesn't matter.
+          schema:
+            type: string
+            default: B
+        - name: attachment
+          in: query
+          description: Serve the body as a file download.
+          schema:
+            type: boolean
+            default: false
+        - name: Range
+          in: header
+          description: A single byte range. Other forms are ignored.
+          schema:
+            type: string
+        - name: If-Range
+          in: header
+          description: Serve the range only if this ETag still matches.
+          schema:
+            type: string
+        - name: If-Match
+          in: header
+          description: Answer `412` unless one of these ETags matches.
+          schema:
+            type: string
+        - name: If-None-Match
+          in: header
+          description: Answer `304` if one of these ETags matches.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The whole body.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: The requested range.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: The client's copy is current.
+        '400':
+          $ref: '#/components/responses/InvalidParameter'
+        '412':
+          description: A precondition failed.
+        '416':
+          description: The range is outside the body.
+  /echo:
+    get:
+      operationId: echo
+      summary: Echo WebSocket messages
+      description: >-
+        Upgrades to a WebSocket that returns each text and binary message. Browsers on other sites
+        are refused unless the server allows any origin. HTTP/2 clients send `CONNECT` instead of
+        `GET`, which OpenAPI can't describe, and get `200` instead of `101`.
+      responses:
+        '101':
+          description: The connection was upgraded.
+        '200':
+          description: The HTTP/2 stream was upgraded.
+        '400':
+          description: The request wasn't a valid upgrade.
+        '403':
+          description: The browser's origin isn't allowed.
+  /health:
+    get:
+      operationId: getHealth
+      summary: Report the configured health status
+      responses:
+        '200':
+          $ref: '#/components/responses/Health'
+        '503':
+          $ref: '#/components/responses/Health'
+        default:
+          $ref: '#/components/responses/Health'
+    post:
+      operationId: setHealth
+      summary: Change the status `GET` returns
+      description: >-
+        The JSON content type is required, so that a web page can't change the status of a server
+        its visitor can reach.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: integer
+              minimum: 200
+              maximum: 599
+      responses:
+        '200':
+          description: The status changed.
+        '400':
+          description: The body wasn't a status between 200 and 599.
+        '408':
+          $ref: '#/components/responses/BodyTimedOut'
+        '413':
+          $ref: '#/components/responses/BodyTooLarge'
+        '415':
+          description: The content type wasn't JSON.
+        '503':
+          description: The server is shutting down.
+  /openapi.yaml:
+    get:
+      operationId: getOpenApi
+      summary: Return this description
+      responses:
+        '200':
+          description: This document.
+          content:
+            application/yaml:
+              schema:
+                type: object
+components:
+  parameters:
+    Wait:
+      name: wait
+      in: query
+      description: Delay the response, such as `100ms` or `2s`.
+      schema:
+        type: string
+    Env:
+      name: env
+      in: query
+      description: Include the server's environment, if the operator allowed it.
+      schema:
+        type: boolean
+        default: false
+  responses:
+    Health:
+      description: The status set by the last update, with a header identifying kneetap.
+      headers:
+        x-kneetap-health:
+          schema:
+            type: string
+            const: '1'
+    InvalidParameter:
+      description: A query parameter this path reads was invalid or repeated.
+      content:
+        text/plain:
+          schema:
+            type: string
+    EnvironmentDisabled:
+      description: The operator hasn't allowed environment reports.
+      content:
+        text/plain:
+          schema:
+            type: string
+    BodyTimedOut:
+      description: The request body didn't arrive in time.
+      content:
+        text/plain:
+          schema:
+            type: string
+    BodyTooLarge:
+      description: The request body exceeds the maximum for this path.
+      content:
+        text/plain:
+          schema:
+            type: string
+  schemas:
+    Report:
+      type: object
+      required:
+        - hostname
+        - addresses
+        - remoteAddr
+        - method
+        - target
+        - host
+        - httpVersion
+        - headers
+        - body
+        - bodyEncoding
+        - tls
+        - serverStatus
+      properties:
+        name:
+          type: string
+          description: The operator's name for this instance.
+        hostname:
+          type: [string, 'null']
+        addresses:
+          type: array
+          items:
+            type: string
+        remoteAddr:
+          type: string
+          description: The connected peer, which is the proxy when there is one.
+        environment:
+          type: array
+          items:
+            type: string
+        method:
+          type: string
+        target:
+          type: string
+          description: The path and query as received.
+        host:
+          type: string
+        httpVersion:
+          type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        body:
+          type: string
+        bodyEncoding:
+          type: string
+          enum: [text, base64]
+        tls:
+          oneOf:
+            - $ref: '#/components/schemas/Tls'
+            - type: 'null'
+        serverStatus:
+          $ref: '#/components/schemas/ServerStatus'
+    Tls:
+      type: object
+      required:
+        - version
+        - cipher
+        - alpn
+        - certificateSource
+        - clientVerification
+        - clientSubjects
+      properties:
+        version:
+          type: string
+        cipher:
+          type: string
+        alpn:
+          type: [string, 'null']
+        certificateSource:
+          type: string
+          enum: [file, generated]
+        clientVerification:
+          type: string
+          enum: [absent, verified, unverified]
+          description: Unverified subjects are only claims, so never use them for authorization.
+        clientSubjects:
+          type: array
+          items:
+            type: string
+    ServerStatus:
+      type: object
+      required:
+        - reloadError
+        - degradations
+      properties:
+        reloadError:
+          type: [string, 'null']
+          description: Why the last certificate reload was rejected.
+        degradations:
+          type: array
+          description: Codes for what didn't start normally.
+          items:
+            type: string

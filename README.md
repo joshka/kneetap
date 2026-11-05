@@ -14,6 +14,7 @@ curl localhost:8080/anything
 | --- | --- |
 | `/api` | The report as JSON |
 | `/bench` | `1`, for load testing |
+| `/openapi.yaml` | A description of this API |
 | `/` or `/api` with `?wait=2s` | The report, after a delay |
 | `/` or `/api` with `?env=true` | The report with environment variables, if `--enable-env` is set |
 | `/data?size=10&unit=MiB` | Generated data, with range requests and `?attachment=true` |
