@@ -22,6 +22,7 @@
 //! [kneetap]: https://github.com/joshka/kneetap
 
 mod data;
+mod echo;
 mod error;
 mod health;
 mod host;

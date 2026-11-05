@@ -43,6 +43,10 @@ struct Serve {
     /// Allow `?env=true` to return the server's environment variables
     #[arg(long)]
     enable_env: bool,
+
+    /// Permit browsers to connect to `/echo` from any origin
+    #[arg(long)]
+    allow_any_ws_origin: bool,
 }
 
 #[derive(Debug, Args)]
@@ -141,6 +145,9 @@ fn run_server(serve: &Serve) -> Result<()> {
     let mut builder = Server::builder();
     if serve.enable_env {
         builder = builder.enable_env();
+    }
+    if serve.allow_any_ws_origin {
+        builder = builder.allow_any_ws_origin();
     }
     if let Some(name) = &serve.name {
         builder = builder.name(name);
