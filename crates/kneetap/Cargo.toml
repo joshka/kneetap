@@ -25,5 +25,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "signal", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "json", "std"] }
 
+[target."cfg(unix)".dependencies]
+privdrop.workspace = true
+
 [dev-dependencies]
 rstest.workspace = true
