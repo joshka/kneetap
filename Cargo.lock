@@ -620,7 +620,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "humantime",
+ "kneetap-client",
  "kneetap-server",
+ "rstest",
+ "serde_json",
  "tokio",
 ]
 
@@ -630,6 +634,19 @@ version = "0.1.0"
 dependencies = [
  "insta",
  "serde",
+]
+
+[[package]]
+name = "kneetap-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "kneetap-api",
+ "kneetap-server",
+ "reqwest",
+ "rstest",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
