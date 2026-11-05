@@ -3,8 +3,20 @@
 kneetap is a small server that reports which instance answered a request and what that request
 looked like when it arrived.
 
-It's under active development and doesn't serve requests yet. See [CONTRIBUTING](CONTRIBUTING.md)
-to build it.
+It's under active development. To try it:
+
+```sh
+cargo run -p kneetap -- serve --port 8080
+curl localhost:8080/anything
+```
+
+| Path | Response |
+| --- | --- |
+| `/api` | The report as JSON |
+| `/bench` | `1`, for load testing |
+| Anything else | The report as text, or JSON if the client prefers it |
+
+See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
 
 ## License
 

@@ -7,3 +7,5 @@
 - Suppress a lint with `#[expect(lint, reason = "...")]`, never `#[allow]`, except on generated code.
 - Keep tool configuration in `.config/` where the tool supports it. `rustfmt.toml` stays at the root
   because rustfmt can't find it elsewhere, and `cargo-deny` needs an explicit `--config`.
+- Put a blank line before a doc comment, including on struct fields and enum variants, so long lists
+  stay easy to scan.

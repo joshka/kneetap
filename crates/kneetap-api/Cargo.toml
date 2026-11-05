@@ -1,0 +1,18 @@
+[package]
+name = "kneetap-api"
+description = "Report types shared by the kneetap server and client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["http", "debugging", "server"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive", "std"] }
+
+[dev-dependencies]
+insta.workspace = true
