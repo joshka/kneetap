@@ -3,6 +3,9 @@ use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
+
 use crate::health::Health;
 use crate::host::Host;
 use crate::limits::Limits;
@@ -63,7 +66,9 @@ impl Server {
 
     /// Handles requests until `shutdown` completes.
     ///
-    /// Shutdown stops accepting connections and waits for requests in progress to finish.
+    /// Shutdown reports unhealthy, stops accepting connections, closes `WebSocket` connections, and
+    /// lets requests in progress finish, for up to the [shutdown
+    /// timeout](ServerBuilder::shutdown_timeout).
     ///
     /// # Errors
     ///
@@ -72,6 +77,8 @@ impl Server {
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        let stop = CancellationToken::new();
+        let websockets = TaskTracker::new();
         let (reporter, grpc_health) = tonic_health::server::health_reporter();
         let settings = self.settings;
         let status = Status::default();
@@ -90,20 +97,28 @@ impl Server {
             max_ws_message_size: settings.max_ws_message_size,
             status,
             body_timeout: settings.limits.body_timeout,
+            shutdown_timeout: settings.limits.shutdown_timeout,
+            websockets: websockets.clone(),
+            stop: stop.clone(),
         });
-        let app = grpc::router(context.clone(), grpc_health)
-            .fallback_service(routes::router(context.clone()));
-        let shutdown = async move {
-            shutdown.await;
-            context.health.stop_watches().await;
-        };
+        let draining = context.clone();
+        let app =
+            grpc::router(context.clone(), grpc_health).fallback_service(routes::router(context));
         let interval = settings.reload_interval;
         let _reloads = certificates
             .clone()
             .map(|tls| reload::spawn(tls, self.reload, interval));
-        transport::run(self.listeners, app, certificates, settings.limits, shutdown)
-            .await
-            .map_err(Error::serve)
+        let trigger = stop.clone();
+        tokio::spawn(async move {
+            shutdown.await;
+            draining.health.drain().await;
+            // Watchers see the drain first, because ending a watch delivers its last status.
+            draining.health.stop_watches().await;
+            trigger.cancel();
+        });
+        let limits = settings.limits;
+        let served = transport::run(self.listeners, app, certificates, limits, stop, websockets);
+        served.await.map_err(Error::serve)
     }
 }
 
@@ -261,6 +276,13 @@ impl ServerBuilder {
     #[must_use]
     pub const fn idle_timeout(mut self, timeout: Duration) -> Self {
         self.limits.idle_timeout = timeout;
+        self
+    }
+
+    /// Sets how long shutdown waits for work in progress. The default is 10 seconds.
+    #[must_use]
+    pub const fn shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.limits.shutdown_timeout = timeout;
         self
     }
 

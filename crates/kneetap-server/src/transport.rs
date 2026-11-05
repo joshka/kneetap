@@ -1,5 +1,4 @@
 use std::convert::Infallible;
-use std::future::Future;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -21,6 +20,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tower::ServiceExt;
 
 use crate::limits::{Activity, Deadlines, Limits, TrackedBody};
@@ -81,26 +81,28 @@ struct Shared {
     stop: CancellationToken,
 }
 
-/// Accepts connections on every listener until `shutdown` completes.
+/// Accepts connections on every listener until `stop` is cancelled, then drains them.
+///
+/// All connections, upgraded or not, share one deadline. When it passes, dropping the tasks ends
+/// the remaining connections. `WebSocket` tasks aren't owned here, and have already been told to
+/// stop, so one stuck writing ends at its write deadline.
 ///
 /// Each connection is served directly so that handlers can see facts only it knows, such as the
 /// client certificate from the handshake, and so limits can own each connection's lifetime.
-pub async fn run<F>(
+pub async fn run(
     listeners: Vec<Listener>,
     app: Router,
     tls: Option<Arc<Certificates>>,
     limits: Limits,
-    shutdown: F,
-) -> io::Result<()>
-where
-    F: Future<Output = ()> + Send + 'static,
-{
+    stop: CancellationToken,
+    websockets: TaskTracker,
+) -> io::Result<()> {
     let shared = Shared {
         app,
         limits,
         connections: Arc::new(Semaphore::new(limits.max_connections)),
         requests: Arc::new(Semaphore::new(limits.max_inflight_requests)),
-        stop: CancellationToken::new(),
+        stop: stop.clone(),
     };
     let mut tasks = JoinSet::new();
     for listener in listeners {
@@ -109,9 +111,13 @@ where
         let tls = listener.secure.then(|| tls.clone()).flatten();
         tasks.spawn(accept(socket, tls, shared.clone()));
     }
-    shutdown.await;
-    shared.stop.cancel();
-    while tasks.join_next().await.is_some() {}
+    stop.cancelled().await;
+    websockets.close();
+    let drain = async {
+        while tasks.join_next().await.is_some() {}
+        websockets.wait().await;
+    };
+    let _ = tokio::time::timeout(limits.shutdown_timeout, drain).await;
     Ok(())
 }
 
@@ -144,6 +150,8 @@ async fn accept(socket: tokio::net::TcpListener, tls: Option<Arc<Certificates>>,
         connections.spawn(connection(stream, peer, permit, material, shared.clone()));
         while connections.try_join_next().is_some() {}
     }
+    // Closing now refuses new clients, rather than leaving them queued until the process exits.
+    drop(socket);
     while connections.join_next().await.is_some() {}
 }
 

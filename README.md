@@ -72,6 +72,12 @@ watch counts as a request. Run `kneetap serve --help` to change any of these.
 | `/data` response | 10 GB |
 | `?wait=` delay | 5 minutes |
 
+## Stopping
+
+On `SIGTERM` or an interrupt, kneetap reports unhealthy, stops accepting connections, closes
+WebSockets, and lets requests in progress finish for up to `--shutdown-timeout`, 10 seconds by
+default.
+
 See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
 
 ## License

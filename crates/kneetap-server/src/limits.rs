@@ -25,6 +25,7 @@ pub struct Limits {
     pub body_timeout: Duration,
     pub write_idle_timeout: Duration,
     pub idle_timeout: Duration,
+    pub shutdown_timeout: Duration,
 }
 
 impl Default for Limits {
@@ -37,6 +38,7 @@ impl Default for Limits {
             body_timeout: Duration::from_secs(30),
             write_idle_timeout: Duration::from_secs(30),
             idle_timeout: Duration::from_secs(60),
+            shutdown_timeout: Duration::from_secs(10),
         }
     }
 }

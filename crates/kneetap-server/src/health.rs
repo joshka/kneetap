@@ -7,6 +7,7 @@ use axum::http::request::Parts;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
 use kneetap_api::{HEALTH_HEADER, HEALTH_MARKER};
+use tokio::sync::Mutex;
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
 
@@ -23,6 +24,15 @@ const GRPC_SERVICES: [&str; 2] = ["", "kneetap.v1.Reporter"];
 pub struct Health {
     status: AtomicU16,
     grpc: HealthReporter,
+
+    /// Serializes changes, so that an update can't undo the status set for draining.
+    update: Mutex<Update>,
+}
+
+/// State that only changes while holding [`Health::update`].
+#[derive(Default)]
+struct Update {
+    draining: bool,
 }
 
 impl fmt::Debug for Health {
@@ -37,9 +47,19 @@ impl Health {
         let health = Self {
             status: AtomicU16::new(StatusCode::OK.as_u16()),
             grpc,
+            update: Mutex::default(),
         };
         health.publish(ServingStatus::Serving).await;
         health
+    }
+
+    /// Reports unhealthy from now on, so that load balancers stop sending new requests.
+    pub async fn drain(&self) {
+        let mut update = self.update.lock().await;
+        update.draining = true;
+        self.status
+            .store(StatusCode::SERVICE_UNAVAILABLE.as_u16(), Ordering::Relaxed);
+        self.publish(ServingStatus::NotServing).await;
     }
 
     /// Ends open gRPC health watches, which would otherwise hold a graceful shutdown open forever.
@@ -71,6 +91,10 @@ pub async fn respond(
 ) -> Result<Response, Rejection> {
     if parts.method == Method::POST {
         let status = read_update(parts, body, timeout).await?;
+        let update = health.update.lock().await;
+        if update.draining {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "server shutting down\n"));
+        }
         health.status.store(status, Ordering::Relaxed);
         let serving = if status < 300 {
             ServingStatus::Serving
@@ -146,6 +170,17 @@ mod tests {
         respond(health, &parts, Body::empty(), TIMEOUT)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn draining_reports_unhealthy_and_refuses_updates() {
+        let health = health().await;
+
+        health.drain().await;
+
+        let update = post(&health, "application/json", "200").await;
+        assert_eq!(update, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(get(&health).await.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
