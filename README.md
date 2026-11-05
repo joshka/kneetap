@@ -26,8 +26,9 @@ To make a replica fail its health checks, for example while testing load balance
 curl -H 'content-type: application/json' -d 503 localhost:8080/health
 ```
 
-From another machine, `kneetap report http://server:8080` prints a report, and `kneetap healthcheck`
-exits successfully only if a local server is healthy.
+`kt` is a shorter name for the same program. From another machine,
+`kneetap report http://server:8080` prints a report, and `kneetap healthcheck` exits successfully
+only if a local server is healthy.
 
 See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
 
