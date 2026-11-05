@@ -24,6 +24,7 @@
 mod data;
 mod echo;
 mod error;
+mod grpc;
 mod health;
 mod host;
 mod report;

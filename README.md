@@ -31,6 +31,9 @@ curl -H 'content-type: application/json' -d 503 localhost:8080/health
 `kneetap report http://server:8080` prints a report, and `kneetap healthcheck` exits successfully
 only if a local server is healthy.
 
+gRPC shares the same port, with the `kneetap.v1.Reporter` service, standard health checks, and
+reflection, so `grpcurl -plaintext localhost:8080 kneetap.v1.Reporter/GetReport` works.
+
 See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
 
 ## License

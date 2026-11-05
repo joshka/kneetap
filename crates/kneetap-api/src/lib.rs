@@ -10,6 +10,8 @@
 //!
 //! [kneetap]: https://github.com/joshka/kneetap
 
+#[cfg(feature = "grpc")]
+pub mod grpc;
 mod report;
 
 pub use report::{BodyEncoding, Report};

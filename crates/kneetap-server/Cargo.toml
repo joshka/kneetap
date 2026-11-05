@@ -19,11 +19,14 @@ hostname.workspace = true
 humantime.workspace = true
 if-addrs.workspace = true
 itertools.workspace = true
-kneetap-api.workspace = true
+kneetap-api = { workspace = true, features = ["grpc"] }
 mime.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "time"] }
+tonic = { workspace = true, features = ["router", "server"] }
+tonic-health.workspace = true
+tonic-reflection = { workspace = true, features = ["server"] }
 url.workspace = true
 
 [dev-dependencies]
@@ -34,4 +37,5 @@ rstest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util"] }
 futures-util = { workspace = true, features = ["sink"] }
 tokio-tungstenite = { workspace = true, features = ["connect"] }
+tonic = { workspace = true, features = ["channel"] }
 tower = { workspace = true, features = ["util"] }

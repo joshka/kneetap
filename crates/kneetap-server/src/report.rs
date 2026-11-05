@@ -55,12 +55,14 @@ pub fn build(
     }
 }
 
-/// Renders a header value, escaping bytes that aren't UTF-8 so a report can show them.
+/// Renders a header value so that a report can show it.
 fn header_text(value: &HeaderValue) -> String {
-    std::str::from_utf8(value.as_bytes()).map_or_else(
-        |_| value.as_bytes().escape_ascii().to_string(),
-        str::to_owned,
-    )
+    escape(value.as_bytes())
+}
+
+/// Keeps UTF-8 text unchanged and escapes anything else.
+pub fn escape(bytes: &[u8]) -> String {
+    std::str::from_utf8(bytes).map_or_else(|_| bytes.escape_ascii().to_string(), str::to_owned)
 }
 
 #[cfg(test)]

@@ -3,10 +3,10 @@ use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::Error;
 use crate::health::Health;
 use crate::host::Host;
 use crate::routes::{self, Context};
+use crate::{Error, grpc};
 
 const DEFAULT_MAX_BODY_SIZE: usize = 1 << 20;
 const DEFAULT_MAX_DATA_SIZE: u64 = 10_000_000_000;
@@ -17,7 +17,7 @@ const DEFAULT_MAX_WAIT: Duration = Duration::from_mins(5);
 #[derive(Debug)]
 pub struct Server {
     listener: TcpListener,
-    context: Arc<Context>,
+    settings: ServerBuilder,
 }
 
 impl Server {
@@ -52,10 +52,27 @@ impl Server {
     {
         self.listener.set_nonblocking(true).map_err(Error::serve)?;
         let listener = tokio::net::TcpListener::from_std(self.listener).map_err(Error::serve)?;
-        let service =
-            routes::router(self.context).into_make_service_with_connect_info::<SocketAddr>();
+        let (reporter, grpc_health) = tonic_health::server::health_reporter();
+        let settings = self.settings;
+        let context = Arc::new(Context {
+            name: settings.name,
+            host: Host::detect(),
+            max_body_size: settings.max_body_size,
+            max_wait: settings.max_wait,
+            enable_env: settings.enable_env,
+            max_data_size: settings.max_data_size,
+            health: Health::new(reporter).await,
+            allow_any_ws_origin: settings.allow_any_ws_origin,
+            max_ws_message_size: settings.max_ws_message_size,
+        });
+        let app = grpc::router(context.clone(), grpc_health)
+            .fallback_service(routes::router(context.clone()));
+        let service = app.into_make_service_with_connect_info::<SocketAddr>();
         axum::serve(listener, service)
-            .with_graceful_shutdown(shutdown)
+            .with_graceful_shutdown(async move {
+                shutdown.await;
+                context.health.stop_watches().await;
+            })
             .await
             .map_err(Error::serve)
     }
@@ -148,20 +165,9 @@ impl ServerBuilder {
     /// Returns an error if the address can't be bound.
     pub fn bind(self, address: impl ToSocketAddrs) -> Result<Server, Error> {
         let listener = TcpListener::bind(address).map_err(Error::bind)?;
-        let context = Context {
-            name: self.name,
-            host: Host::detect(),
-            max_body_size: self.max_body_size,
-            max_wait: self.max_wait,
-            enable_env: self.enable_env,
-            max_data_size: self.max_data_size,
-            health: Health::default(),
-            allow_any_ws_origin: self.allow_any_ws_origin,
-            max_ws_message_size: self.max_ws_message_size,
-        };
         Ok(Server {
             listener,
-            context: Arc::new(context),
+            settings: self,
         })
     }
 }

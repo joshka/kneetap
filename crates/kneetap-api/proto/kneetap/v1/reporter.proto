@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package kneetap.v1;
+
+// Reports which instance answered a call and what it received.
+service Reporter {
+  // Returns the report for this call.
+  rpc GetReport(GetReportRequest) returns (GetReportResponse);
+
+  // Returns immediately, for load testing.
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+// Asks for a report. Call metadata is what the report describes.
+message GetReportRequest {}
+
+// What the server knows about itself and one call.
+message GetReportResponse {
+  // The operator's name for this instance, if it has one.
+  optional string name = 1;
+  // The host's name, if it could be determined.
+  optional string hostname = 2;
+  // The host's interface addresses, sorted.
+  repeated string addresses = 3;
+  // The address of the connected peer.
+  string remote_addr = 4;
+  // Metadata the call carried.
+  repeated MetadataEntry metadata = 5;
+}
+
+// One metadata value. A name can appear more than once.
+message MetadataEntry {
+  // The lowercase metadata name.
+  string name = 1;
+  // The value, with bytes that aren't UTF-8 escaped.
+  string value = 2;
+}
+
+// An empty load-testing call.
+message PingRequest {}
+
+// The reply to a load-testing call.
+message PingResponse {}
