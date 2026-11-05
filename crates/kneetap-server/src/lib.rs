@@ -21,12 +21,14 @@
 //!
 //! [kneetap]: https://github.com/joshka/kneetap
 
+mod body;
 mod data;
 mod echo;
 mod error;
 mod grpc;
 mod health;
 mod host;
+mod limits;
 mod reload;
 mod report;
 mod routes;

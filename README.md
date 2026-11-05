@@ -54,6 +54,24 @@ Certificate files are checked every 30 seconds (`--tls-reload-interval`), and `S
 at once. A replacement is validated before it's used. If it's rejected, the server keeps its
 working certificate and reports the failure in `serverStatus.reloadError`.
 
+## Limits
+
+Connections and requests are bounded, so stalled and abandoned connections can't keep capacity for
+long. These limits are shared across clients, so a busy client can still use them up. Long-lived
+streams hold capacity while they stay open: a WebSocket counts as a connection, and a gRPC health
+watch counts as a request. Run `kneetap serve --help` to change any of these.
+
+| Limit | Default |
+| --- | --- |
+| Connections | 1024 |
+| Requests in progress | 1024 |
+| TLS handshake, or first bytes and headers | 10 seconds each |
+| Reading a request body, or a blocked write | 30 seconds each |
+| A connection with no requests | 60 seconds |
+| Request body and WebSocket message | 1 MiB each |
+| `/data` response | 10 GB |
+| `?wait=` delay | 5 minutes |
+
 See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
 
 ## License

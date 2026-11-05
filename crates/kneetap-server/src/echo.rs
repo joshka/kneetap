@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{FromRequestParts, WebSocketUpgrade};
 use axum::http::request::Parts;
@@ -6,6 +8,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use url::Url;
 
+use crate::limits::Activity;
 use crate::routes::{Context, Rejection};
 
 /// Upgrades a request to a WebSocket that echoes messages.
@@ -16,10 +19,15 @@ pub async fn upgrade(context: &Context, parts: &mut Parts) -> Result<Response, R
     let upgrade = WebSocketUpgrade::from_request_parts(parts, &()).await;
     let upgrade = upgrade.map_err(|_| (StatusCode::BAD_REQUEST, "WebSocket upgrade required\n"))?;
     let limit = context.max_ws_message_size;
+    // An HTTP/2 WebSocket shares its connection, which must not count as idle while this is open.
+    let guard = parts.extensions.get::<Arc<Activity>>().map(Activity::begin);
     Ok(upgrade
         .max_message_size(limit)
         .max_frame_size(limit)
-        .on_upgrade(echo)
+        .on_upgrade(|socket| async move {
+            let _guard = guard;
+            echo(socket).await;
+        })
         .into_response())
 }
 

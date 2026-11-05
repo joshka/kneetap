@@ -16,8 +16,11 @@ axum = { version = "0.8", default-features = false }
 base64 = { version = "0.23", default-features = false }
 clap = { version = "4.6", default-features = false }
 futures-util = { version = "0.3", default-features = false }
+h2 = "0.4"
 hostname = "0.4"
 humantime = "2"
+http-body = "1"
+http-body-util = "0.1"
 hyper = { version = "1", default-features = false }
 hyper-util = { version = "0.1", default-features = false }
 if-addrs = "0.15"

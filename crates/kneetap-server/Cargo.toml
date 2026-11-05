@@ -17,6 +17,8 @@ axum = { workspace = true, features = ["http1", "http2", "query", "tokio", "ws"]
 base64 = { workspace = true, features = ["std"] }
 futures-util.workspace = true
 hostname.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
 humantime.workspace = true
 hyper = { workspace = true, features = ["http1", "http2", "server"] }
 hyper-util = { workspace = true, features = ["http1", "http2", "server-auto", "service", "tokio"] }
@@ -39,6 +41,7 @@ url.workspace = true
 x509-parser.workspace = true
 
 [dev-dependencies]
+h2.workspace = true
 hyper = { workspace = true, features = ["client"] }
 insta = { workspace = true, features = ["json"] }
 kneetap-client.workspace = true

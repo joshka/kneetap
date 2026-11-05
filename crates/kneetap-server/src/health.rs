@@ -1,7 +1,8 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::time::Duration;
 
-use axum::body::{self, Body};
+use axum::body::Body;
 use axum::http::request::Parts;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
@@ -9,6 +10,7 @@ use kneetap_api::{HEALTH_HEADER, HEALTH_MARKER};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
 
+use crate::body;
 use crate::routes::Rejection;
 
 /// Longest body a status update needs, since it only holds a number.
@@ -61,9 +63,14 @@ impl Health {
 /// Updates must be JSON because browsers can't send that type across sites without a preflight,
 /// which this path refuses, so a web page can't change the status of a server its visitor can
 /// reach.
-pub async fn respond(health: &Health, parts: &Parts, body: Body) -> Result<Response, Rejection> {
+pub async fn respond(
+    health: &Health,
+    parts: &Parts,
+    body: Body,
+    timeout: Duration,
+) -> Result<Response, Rejection> {
     if parts.method == Method::POST {
-        let status = read_update(parts, body).await?;
+        let status = read_update(parts, body, timeout).await?;
         health.status.store(status, Ordering::Relaxed);
         let serving = if status < 300 {
             ServingStatus::Serving
@@ -88,7 +95,7 @@ pub async fn respond(health: &Health, parts: &Parts, body: Body) -> Result<Respo
 }
 
 /// Reads a status from an update, limited to statuses that a response can carry usefully.
-async fn read_update(parts: &Parts, body: Body) -> Result<u16, Rejection> {
+async fn read_update(parts: &Parts, body: Body, timeout: Duration) -> Result<u16, Rejection> {
     let is_json = parts
         .headers
         .get(header::CONTENT_TYPE)
@@ -101,9 +108,7 @@ async fn read_update(parts: &Parts, body: Body) -> Result<u16, Rejection> {
             "expected application/json\n",
         ));
     }
-    let bytes = body::to_bytes(body, MAX_UPDATE_SIZE)
-        .await
-        .map_err(|_| (StatusCode::PAYLOAD_TOO_LARGE, "body exceeds maximum\n"))?;
+    let bytes = body::read(body, MAX_UPDATE_SIZE, timeout).await?;
     let status: u16 = serde_json::from_slice(&bytes)
         .map_err(|_| (StatusCode::BAD_REQUEST, "expected an integer status\n"))?;
     if !(200..=599).contains(&status) {
@@ -119,6 +124,8 @@ mod tests {
 
     use super::*;
 
+    const TIMEOUT: Duration = Duration::from_secs(1);
+
     async fn health() -> Health {
         Health::new(tonic_health::server::health_reporter().0).await
     }
@@ -128,7 +135,7 @@ mod tests {
             .header("content-type", content_type)
             .body(())
             .unwrap();
-        match respond(health, &request.into_parts().0, body.into()).await {
+        match respond(health, &request.into_parts().0, body.into(), TIMEOUT).await {
             Ok(response) => response.status(),
             Err((status, _)) => status,
         }
@@ -136,7 +143,9 @@ mod tests {
 
     async fn get(health: &Health) -> Response {
         let parts = Request::get("/health").body(()).unwrap().into_parts().0;
-        respond(health, &parts, Body::empty()).await.unwrap()
+        respond(health, &parts, Body::empty(), TIMEOUT)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
