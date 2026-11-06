@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use axum::body::{self, Body};
@@ -5,19 +6,53 @@ use axum::http::request::Parts;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
 use kneetap_api::{HEALTH_HEADER, HEALTH_MARKER};
+use tonic_health::ServingStatus;
+use tonic_health::server::HealthReporter;
 
 use crate::routes::Rejection;
 
 /// Longest body a status update needs, since it only holds a number.
 const MAX_UPDATE_SIZE: usize = 64;
 
-/// The status `/health` returns, which clients change to simulate failures.
-#[derive(Debug)]
-pub struct Health(AtomicU16);
+/// The gRPC services whose health follows the HTTP status. The empty name means the whole server.
+const GRPC_SERVICES: [&str; 2] = ["", "kneetap.v1.Reporter"];
 
-impl Default for Health {
-    fn default() -> Self {
-        Self(AtomicU16::new(StatusCode::OK.as_u16()))
+/// The status `/health` returns, which clients change to simulate failures.
+pub struct Health {
+    status: AtomicU16,
+    grpc: HealthReporter,
+}
+
+impl fmt::Debug for Health {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Health").field(&self.status).finish()
+    }
+}
+
+impl Health {
+    /// Starts healthy, publishing the status through `grpc` as well.
+    pub async fn new(grpc: HealthReporter) -> Self {
+        let health = Self {
+            status: AtomicU16::new(StatusCode::OK.as_u16()),
+            grpc,
+        };
+        health.publish(ServingStatus::Serving).await;
+        health
+    }
+
+    /// Ends open gRPC health watches, which would otherwise hold a graceful shutdown open forever.
+    pub async fn stop_watches(&self) {
+        let mut grpc = self.grpc.clone();
+        for service in GRPC_SERVICES {
+            grpc.clear_service_status(service).await;
+        }
+    }
+
+    /// Sets every gRPC service to `status`, so a whole-server check agrees with a per-service one.
+    async fn publish(&self, status: ServingStatus) {
+        for service in GRPC_SERVICES {
+            self.grpc.set_service_status(service, status).await;
+        }
     }
 }
 
@@ -29,10 +64,16 @@ impl Default for Health {
 pub async fn respond(health: &Health, parts: &Parts, body: Body) -> Result<Response, Rejection> {
     if parts.method == Method::POST {
         let status = read_update(parts, body).await?;
-        health.0.store(status, Ordering::Relaxed);
+        health.status.store(status, Ordering::Relaxed);
+        let serving = if status < 300 {
+            ServingStatus::Serving
+        } else {
+            ServingStatus::NotServing
+        };
+        health.publish(serving).await;
         return Ok(Response::default());
     }
-    let status = health.0.load(Ordering::Relaxed);
+    let status = health.status.load(Ordering::Relaxed);
     let mut response = Response::default();
     *response.status_mut() = StatusCode::from_u16(status).expect("updates are validated");
     response.headers_mut().insert(
@@ -78,6 +119,10 @@ mod tests {
 
     use super::*;
 
+    async fn health() -> Health {
+        Health::new(tonic_health::server::health_reporter().0).await
+    }
+
     async fn post(health: &Health, content_type: &str, body: &'static str) -> StatusCode {
         let request = Request::post("/health")
             .header("content-type", content_type)
@@ -96,7 +141,7 @@ mod tests {
 
     #[tokio::test]
     async fn starts_healthy_and_identifies_itself() {
-        let response = get(&Health::default()).await;
+        let response = get(&health().await).await;
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[HEALTH_HEADER], HEALTH_MARKER);
@@ -105,7 +150,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_update_changes_later_responses() {
-        let health = Health::default();
+        let health = health().await;
 
         let update = post(&health, "application/json", "503").await;
 
@@ -133,7 +178,7 @@ mod tests {
         #[case] body: &'static str,
         #[case] refusal: StatusCode,
     ) {
-        let health = Health::default();
+        let health = health().await;
 
         let update = post(&health, content_type, body).await;
 

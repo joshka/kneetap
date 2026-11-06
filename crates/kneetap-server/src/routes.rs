@@ -72,6 +72,9 @@ async fn handle(State(context): State<Arc<Context>>, request: Request) -> Respon
 /// Chooses a response by path.
 async fn dispatch(context: &Context, request: Request) -> Result<Response, Rejection> {
     let (mut parts, body) = request.into_parts();
+    if is_grpc(&parts) {
+        return Ok(tonic::Status::unimplemented("unknown method").into_http());
+    }
     // HTTP/2 WebSockets start with CONNECT (RFC 8441 section 4), and the upgrade validates them.
     let h2_connect = parts.method == Method::CONNECT && parts.version == Version::HTTP_2;
     if parts.uri.path() == "/echo" && (parts.method == Method::GET || h2_connect) {
@@ -146,6 +149,15 @@ fn requested_wait(context: &Context, wait: Option<&str>) -> Result<Duration, Rej
         return Err((StatusCode::BAD_REQUEST, "wait exceeds maximum\n"));
     }
     Ok(wait)
+}
+
+/// Reports whether an unmatched request is a gRPC call, which must get a gRPC answer.
+fn is_grpc(parts: &Parts) -> bool {
+    parts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/grpc"))
 }
 
 /// Returns the methods a path allows when it refuses this one.
@@ -274,7 +286,7 @@ mod tests {
 
     const MAX_BODY_SIZE: usize = 4;
 
-    fn context() -> Context {
+    async fn context() -> Context {
         Context {
             name: Some("blue".to_owned()),
             host: Host {
@@ -285,14 +297,14 @@ mod tests {
             max_wait: Duration::from_secs(60),
             enable_env: false,
             max_data_size: 1000,
-            health: Health::default(),
+            health: Health::new(tonic_health::server::health_reporter().0).await,
             allow_any_ws_origin: false,
             max_ws_message_size: 1024,
         }
     }
 
     async fn send(request: Request<Body>) -> Response {
-        send_to(context(), request).await
+        send_to(context().await, request).await
     }
 
     async fn send_to(context: Context, mut request: Request<Body>) -> Response {
@@ -353,6 +365,18 @@ mod tests {
           "target": "/api"
         }
         "#);
+    }
+
+    #[tokio::test]
+    async fn unknown_grpc_methods_get_a_grpc_status() {
+        let call = Request::post("/other.Service/Call")
+            .header("content-type", "application/grpc")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = send(call).await;
+
+        assert_eq!(response.headers()["grpc-status"], "12");
     }
 
     #[tokio::test]
@@ -442,7 +466,7 @@ mod tests {
     async fn enabled_environment_is_reported() {
         let context = Context {
             enable_env: true,
-            ..context()
+            ..context().await
         };
 
         let response = send_to(context, request("GET", "/api?env=true", "")).await;

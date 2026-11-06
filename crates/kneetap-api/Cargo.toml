@@ -11,8 +11,20 @@ keywords = ["http", "debugging", "server"]
 [lints]
 workspace = true
 
+[features]
+## Generated gRPC types, kept optional so HTTP clients don't compile tonic.
+grpc = ["dep:prost", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build", "dep:protox"]
+
 [dependencies]
+prost = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive", "std"] }
+tonic = { workspace = true, features = ["codegen"], optional = true }
+tonic-prost = { workspace = true, optional = true }
+
+[build-dependencies]
+prost = { workspace = true, optional = true }
+protox = { workspace = true, optional = true }
+tonic-prost-build = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta.workspace = true
