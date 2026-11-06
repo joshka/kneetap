@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::net::IpAddr;
 
 /// Identity of the machine serving requests.
@@ -13,13 +14,15 @@ pub struct Host {
 impl Host {
     /// Reads the host's identity, leaving out whatever the system can't provide.
     ///
-    /// A failed lookup is reported as missing data rather than an error, since a partial report is
-    /// still useful.
+    /// A failed lookup is logged and reported as missing data rather than an error, since a partial
+    /// report is still useful.
     pub fn detect() -> Self {
         let name = hostname::get()
+            .inspect_err(|error| tracing::warn!(%error, "host.name.unavailable"))
             .ok()
-            .and_then(|name| name.into_string().ok());
+            .and_then(unicode_name);
         let addresses = if_addrs::get_if_addrs()
+            .inspect_err(|error| tracing::warn!(%error, "host.addresses.unavailable"))
             .unwrap_or_default()
             .iter()
             .map(if_addrs::Interface::ip)
@@ -29,6 +32,13 @@ impl Host {
             addresses: sorted(addresses),
         }
     }
+}
+
+/// Converts a hostname for reports, which can only carry Unicode, logging one that isn't.
+fn unicode_name(name: OsString) -> Option<String> {
+    name.into_string()
+        .inspect_err(|name| tracing::warn!(?name, "host.name.not_unicode"))
+        .ok()
 }
 
 /// Puts addresses in a stable order, because interfaces can share one and the order varies.

@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tower::ServiceExt;
 
-use crate::limits::{Activity, Deadlines, Limits, TrackedBody};
+use crate::limits::{Activity, Deadlines, Limits, Throttle, TrackedBody};
 use crate::reload::Certificates;
 use crate::tls::Material;
 
@@ -32,6 +32,9 @@ const MIN_ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 
 /// Longest wait after repeated failed accepts, so recovery stays prompt.
 const MAX_ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
+
+/// How often refusals are logged while a server is over capacity.
+const LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A bound socket and whether it speaks TLS.
 #[derive(Debug)]
@@ -79,6 +82,7 @@ struct Shared {
     connections: Arc<Semaphore>,
     requests: Arc<Semaphore>,
     stop: CancellationToken,
+    refusals: Arc<Throttle>,
 }
 
 /// Accepts connections on every listener until `stop` is cancelled, then drains them.
@@ -103,6 +107,7 @@ pub async fn run(
         connections: Arc::new(Semaphore::new(limits.max_connections)),
         requests: Arc::new(Semaphore::new(limits.max_inflight_requests)),
         stop: stop.clone(),
+        refusals: Arc::default(),
     };
     let mut tasks = JoinSet::new();
     for listener in listeners {
@@ -130,6 +135,9 @@ async fn accept(socket: tokio::net::TcpListener, tls: Option<Arc<Certificates>>,
             accepted = socket.accept() => accepted,
             () = shared.stop.cancelled() => break,
         };
+        let accepted = accepted.inspect_err(|error| {
+            tracing::warn!(%error, retry_ms = backoff.as_millis(), "connection.accept.failed");
+        });
         let Ok((stream, peer)) = accepted else {
             // Failures such as running out of descriptors clear as connections close.
             tokio::select! {
@@ -143,6 +151,9 @@ async fn accept(socket: tokio::net::TcpListener, tls: Option<Arc<Certificates>>,
         // Admit without waiting, so that a full server drops new connections rather than having
         // one listener hold the last permit while idle and starve the other.
         let Ok(permit) = shared.connections.clone().try_acquire_owned() else {
+            if shared.refusals.allow(LOG_INTERVAL) {
+                tracing::warn!(%peer, "connection.admission.refused");
+            }
             continue;
         };
         // A handshake uses the certificates current when its connection arrived.
@@ -170,7 +181,14 @@ async fn connection(
     };
     let acceptor = TlsAcceptor::from(material.config.clone());
     let handshake = tokio::time::timeout(shared.limits.handshake_timeout, acceptor.accept(stream));
-    let Ok(Ok(stream)) = handshake.await else {
+    let Ok(outcome) = handshake.await else {
+        tracing::debug!(%peer, "connection.handshake.timed_out");
+        return;
+    };
+    let outcome = outcome.inspect_err(|error| {
+        tracing::debug!(%peer, %error, "connection.handshake.failed");
+    });
+    let Ok(stream) = outcome else {
         return;
     };
     let report = material.describe(stream.get_ref().1);
@@ -186,6 +204,7 @@ where
     let limits = shared.limits;
     let activity = Activity::new();
     let requests = shared.requests.clone();
+    let refusals = shared.refusals.clone();
     let app = shared.app.clone();
     let tracked = activity.clone();
     let service = tower::service_fn(move |mut request: Request<Incoming>| {
@@ -194,7 +213,13 @@ where
         if let Some(tls) = &tls {
             extensions.insert(tls.clone());
         }
-        admit(request, app.clone(), requests.clone(), tracked.clone())
+        admit(
+            request,
+            app.clone(),
+            requests.clone(),
+            refusals.clone(),
+            tracked.clone(),
+        )
     });
     let mut builder = Builder::new(TokioExecutor::new());
     builder
@@ -230,9 +255,15 @@ async fn admit(
     mut request: Request<Incoming>,
     app: Router,
     requests: Arc<Semaphore>,
+    refusals: Arc<Throttle>,
     activity: Arc<Activity>,
 ) -> Result<Response, Infallible> {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
     let Ok(permit) = requests.try_acquire_owned() else {
+        if refusals.allow(LOG_INTERVAL) {
+            tracing::warn!(%method, %path, "request.admission.refused");
+        }
         let mut response = Response::new(Body::from("request capacity exhausted\n"));
         *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
         return Ok(response);
@@ -241,5 +272,6 @@ async fn admit(
     // An upgrade outlives its response, so it has to mark itself as a request in progress.
     request.extensions_mut().insert(activity);
     let response = app.oneshot(request).await?;
+    tracing::debug!(%method, %path, status = response.status().as_u16(), "request.handled");
     Ok(response.map(|body| Body::new(TrackedBody::new(body, permit, guard))))
 }

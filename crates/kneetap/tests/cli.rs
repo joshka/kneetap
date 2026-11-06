@@ -1,6 +1,7 @@
 //! The `kneetap` binary, run as a user would.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::process::{Child, Command, Output, Stdio};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_kneetap");
@@ -186,4 +187,111 @@ fn a_signal_lets_the_request_in_progress_finish(#[case] signal: &str) {
 
     assert_eq!(response.lines().next(), Some("HTTP/1.1 200 OK"));
     assert!(status.success(), "{status}");
+}
+
+/// Starts `kneetap serve --verbose` with its stderr piped, returning the process and its address.
+fn serve_verbose(args: &[&str]) -> (Child, String) {
+    let mut child = Command::new(BINARY)
+        .args(["serve", "--verbose", "--bind", "127.0.0.1", "--port", "0"])
+        .args(args)
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let address = line.trim().rsplit('/').next().unwrap().to_owned();
+    (child, address)
+}
+
+/// Sends `bytes` to `address` and returns everything the server sends before closing.
+fn exchange(address: &str, bytes: &[u8]) -> String {
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream.write_all(bytes).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    String::from_utf8_lossy(&response).into_owned()
+}
+
+const GET_BENCH: &[u8] = b"GET /bench HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
+
+#[test]
+fn verbose_logs_each_request_to_stderr() {
+    let (mut child, address) = serve_verbose(&["--log-format", "json"]);
+
+    exchange(&address, GET_BENCH);
+
+    child.kill().unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let event = stderr.lines().find(|line| line.contains("request.handled"));
+    let event: serde_json::Value = serde_json::from_str(event.unwrap_or("{}")).unwrap();
+    assert_eq!(event["fields"]["path"], "/bench", "{stderr}");
+}
+
+#[test]
+fn an_invalid_log_filter_is_reported_as_a_log_event() {
+    let mut child = Command::new(BINARY)
+        .args(["serve", "--log-format", "json"])
+        .args(["--bind", "127.0.0.1", "--port", "0"])
+        .env("RUST_LOG", "kneetap=nonsense")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+
+    child.kill().unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let event: serde_json::Value = serde_json::from_str(stderr.trim()).unwrap();
+    assert_eq!(event["fields"]["message"], "telemetry.filter.rejected");
+}
+
+#[test]
+fn verbose_leaves_out_http2_frames() {
+    let (mut child, address) = serve_verbose(&[]);
+
+    let mut stream = TcpStream::connect(&address).unwrap();
+    stream
+        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\0\0\0\x04\0\0\0\0\0")
+        .unwrap();
+    stream.read_exact(&mut [0; 9]).unwrap();
+
+    child.kill().unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
+}
+
+#[test]
+fn logs_written_to_a_pipe_have_no_color() {
+    let (mut child, address) = serve_verbose(&[]);
+
+    exchange(&address, GET_BENCH);
+
+    child.kill().unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("request.handled"), "{stderr}");
+    assert_eq!(stderr.find('\x1b'), None, "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_closed_log_pipe_does_not_stop_the_server() {
+    let (mut child, address) = serve_verbose(&[]);
+    drop(child.stderr.take());
+    let mut server = Serve { child, address };
+
+    let response = exchange(&server.address, GET_BENCH);
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert_eq!(server.child.try_wait().unwrap(), None, "the server exited");
 }

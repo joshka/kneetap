@@ -93,6 +93,24 @@ impl http_body::Body for DeadlineBody {
     }
 }
 
+/// Allows one event per interval, which limits how often a flood can block on a full log.
+#[derive(Debug, Default)]
+pub struct Throttle {
+    last: Mutex<Option<Instant>>,
+}
+
+impl Throttle {
+    /// Returns whether an event may be logged now.
+    pub fn allow(&self, interval: Duration) -> bool {
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        if last.is_some_and(|last| last.elapsed() < interval) {
+            return false;
+        }
+        *last = Some(Instant::now());
+        true
+    }
+}
+
 /// Tracks whether a connection has requests in progress and when it last did.
 ///
 /// HTTP/2 keep-alive pings prove a client is alive, not that it needs the connection, so this is
@@ -362,6 +380,17 @@ mod tests {
         let read = axum::body::to_bytes(body, 1024).await.unwrap();
 
         assert_eq!((read.len(), start.elapsed()), (3, TIMEOUT * 3 / 2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn repeated_events_are_throttled_per_interval() {
+        let throttle = Throttle::default();
+
+        let allowed = [throttle.allow(TIMEOUT), throttle.allow(TIMEOUT)];
+        tokio::time::advance(TIMEOUT).await;
+
+        assert_eq!(allowed, [true, false]);
+        assert!(throttle.allow(TIMEOUT));
     }
 
     #[tokio::test(start_paused = true)]

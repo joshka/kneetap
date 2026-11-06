@@ -111,6 +111,7 @@ impl Server {
         let trigger = stop.clone();
         tokio::spawn(async move {
             shutdown.await;
+            tracing::info!("server.shutdown.started");
             draining.health.drain().await;
             // Watchers see the drain first, because ending a watch delivers its last status.
             draining.health.stop_watches().await;

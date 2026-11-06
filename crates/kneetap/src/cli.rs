@@ -9,10 +9,20 @@ use kneetap_client::{Client, ClientBuilder};
 use kneetap_server::ReloadHandle;
 use kneetap_server::{Server, TlsConfig};
 
+use crate::telemetry::{self, LogFormat, Verbosity};
+
 /// Command-line arguments.
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Cli {
+    /// Log debug messages; `RUST_LOG` takes priority
+    #[arg(long, global = true)]
+    verbose: bool,
+
+    /// How to write log messages
+    #[arg(long, global = true, value_enum, default_value_t)]
+    log_format: LogFormat,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -195,7 +205,14 @@ struct ReportArgs {
 ///
 /// Returns an error for a failed command, which the binaries turn into a non-zero exit.
 pub fn run() -> Result<()> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    let verbosity = if cli.verbose {
+        Verbosity::Verbose
+    } else {
+        Verbosity::Normal
+    };
+    telemetry::init(cli.log_format, verbosity);
+    match cli.command {
         Command::Serve(serve) => run_server(&serve),
         Command::Healthcheck(check) => block_on(run_healthcheck(check)),
         Command::Report(report) => block_on(run_report(report)),
@@ -284,6 +301,7 @@ fn run_server(serve: &Serve) -> Result<()> {
             .tls(tls_config(serve));
     }
     let server = builder.build()?;
+    // Stdout is the interface scripts use to find the port, so these aren't log events.
     for url in server.urls() {
         println!("listening on {url}");
     }
