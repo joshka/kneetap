@@ -78,3 +78,15 @@ fn report_prints_what_the_server_saw() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert_eq!(text.lines().next(), Some("Name: blue"));
 }
+
+#[test]
+fn kt_is_the_same_program() {
+    let long = kneetap(&["--version"]);
+
+    let short = Command::new(env!("CARGO_BIN_EXE_kt"))
+        .arg("--version")
+        .output()
+        .unwrap();
+
+    assert_eq!(short.stdout, long.stdout);
+}
