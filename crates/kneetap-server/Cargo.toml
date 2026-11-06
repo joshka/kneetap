@@ -17,6 +17,7 @@ base64 = { workspace = true, features = ["std"] }
 hostname.workspace = true
 humantime.workspace = true
 if-addrs.workspace = true
+itertools.workspace = true
 kneetap-api.workspace = true
 mime.workspace = true
 serde = { workspace = true, features = ["derive"] }

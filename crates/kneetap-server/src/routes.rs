@@ -8,6 +8,7 @@ use axum::extract::{ConnectInfo, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
+use itertools::Itertools;
 use serde::Deserialize;
 
 use crate::host::Host;
@@ -114,11 +115,10 @@ fn requested_environment(
 
 /// Lists the process environment as `NAME=value` lines, sorted so reports are easy to compare.
 fn environment_lines() -> Vec<String> {
-    let mut lines: Vec<_> = std::env::vars_os()
+    std::env::vars_os()
         .map(|(name, value)| format!("{}={}", name.display(), value.display()))
-        .collect();
-    lines.sort_unstable();
-    lines
+        .sorted_unstable()
+        .collect_vec()
 }
 
 /// Returns the response delay clients request to test how they handle slow backends.
@@ -417,15 +417,10 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_environment_is_reported() {
-        let mut expected: Vec<_> = std::env::vars_os()
-            .map(|(name, value)| format!("{}={}", name.display(), value.display()))
-            .collect();
-        expected.sort_unstable();
-
         let response = send_with(request("GET", "/api?env=true", ""), true).await;
 
         let json: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
-        assert_eq!(json["environment"], serde_json::json!(expected));
+        assert_eq!(json["environment"], serde_json::json!(environment_lines()));
     }
 
     #[tokio::test(start_paused = true)]
