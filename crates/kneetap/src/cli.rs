@@ -1,14 +1,19 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use clap::builder::BoolishValueParser;
 use clap::{Args, Parser, Subcommand};
 use kneetap_client::{Client, ClientBuilder};
 #[cfg(unix)]
 use kneetap_server::ReloadHandle;
 use kneetap_server::{Server, TlsConfig};
 
+use crate::startup::{
+    self, DEFAULT_HTTP_PORT, DEFAULT_TLS_PORT, FALLBACK_HTTP_PORT, FALLBACK_TLS_PORT, PortChoice,
+    Strictness,
+};
 use crate::telemetry::{self, LogFormat, Verbosity};
 
 /// Command-line arguments.
@@ -40,82 +45,93 @@ enum Command {
 }
 
 #[derive(Debug, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent command-line flag"
+)]
 struct Serve {
-    /// Address to listen on
-    #[arg(long, default_value = "127.0.0.1")]
-    bind: IpAddr,
+    /// Address shared by all listeners [default: all IPv6 and IPv4 addresses]
+    #[arg(long, env = "KNEETAP_BIND")]
+    bind: Option<IpAddr>,
 
-    /// Port to listen on
-    #[arg(long, default_value_t = 8080)]
-    port: u16,
+    /// HTTP port [default: 80, or 8080 if 80 can't be bound]
+    #[arg(long, env = "KNEETAP_PORT")]
+    port: Option<u16>,
 
     /// Name included in reports
-    #[arg(long)]
+    #[arg(long, env = "KNEETAP_NAME")]
     name: Option<String>,
 
     /// Allow `?env=true` to return the server's environment variables
-    #[arg(long)]
+    #[arg(long, env = "KNEETAP_ENABLE_ENV", value_parser = BoolishValueParser::new())]
     enable_env: bool,
 
     /// Permit browsers to connect to `/echo` from any origin
-    #[arg(long)]
+    #[arg(long, env = "KNEETAP_ALLOW_ANY_WS_ORIGIN", value_parser = BoolishValueParser::new())]
     allow_any_ws_origin: bool,
 
-    /// Also serve HTTPS on this port
-    #[arg(long)]
+    /// HTTPS port [default: 443, or 8443 if 443 can't be bound]
+    #[arg(long, env = "KNEETAP_TLS_PORT")]
     tls_port: Option<u16>,
 
     /// Don't serve plain HTTP
-    #[arg(long, requires = "tls_port")]
+    #[arg(long, env = "KNEETAP_NO_HTTP", value_parser = BoolishValueParser::new())]
     no_http: bool,
 
+    /// Don't serve HTTPS, whatever the TLS options say
+    #[arg(long, env = "KNEETAP_NO_TLS", value_parser = BoolishValueParser::new())]
+    no_tls: bool,
+
+    /// Exit at startup on any failure instead of continuing with what works
+    #[arg(long, env = "KNEETAP_STRICT", value_parser = BoolishValueParser::new())]
+    strict: bool,
+
     /// TLS certificate chain in PEM format, instead of a generated one
-    #[arg(long, requires_all = ["key", "tls_port"])]
+    #[arg(long, env = "KNEETAP_CERT", requires = "key")]
     cert: Option<PathBuf>,
 
     /// TLS private key in PEM format
-    #[arg(long, requires = "cert")]
+    #[arg(long, env = "KNEETAP_KEY", requires = "cert")]
     key: Option<PathBuf>,
 
     /// Authorities in PEM format; HTTPS clients must present a certificate they signed
-    #[arg(long, requires = "tls_port")]
+    #[arg(long, env = "KNEETAP_CACERT")]
     cacert: Option<PathBuf>,
 
     /// How often to check TLS files for changes; `0s` turns this off
-    #[arg(long, requires = "tls_port", default_value = "30s")]
-    #[arg(value_parser = humantime::parse_duration)]
+    #[arg(long, env = "KNEETAP_TLS_RELOAD_INTERVAL", default_value = "30s", value_parser = humantime::parse_duration)]
     tls_reload_interval: Duration,
 
     /// Most connections open at once, across all listeners
-    #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, env = "KNEETAP_MAX_CONNECTIONS", default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
     max_connections: u32,
 
     /// Most requests handled at once, across all connections
-    #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, env = "KNEETAP_MAX_INFLIGHT_REQUESTS", default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
     max_inflight_requests: u32,
 
     /// Time allowed for a TLS handshake
-    #[arg(long, default_value = "10s", value_parser = positive_duration)]
+    #[arg(long, env = "KNEETAP_HANDSHAKE_TIMEOUT", default_value = "10s", value_parser = positive_duration)]
     handshake_timeout: Duration,
 
     /// Time allowed for a connection to send its first bytes and complete its headers
-    #[arg(long, default_value = "10s", value_parser = positive_duration)]
+    #[arg(long, env = "KNEETAP_HEADER_TIMEOUT", default_value = "10s", value_parser = positive_duration)]
     header_timeout: Duration,
 
     /// Time allowed to read a request body, or between messages on a gRPC stream
-    #[arg(long, default_value = "30s", value_parser = positive_duration)]
+    #[arg(long, env = "KNEETAP_BODY_TIMEOUT", default_value = "30s", value_parser = positive_duration)]
     body_timeout: Duration,
 
     /// Time a blocked write may wait for the client to read
-    #[arg(long, default_value = "30s", value_parser = positive_duration)]
+    #[arg(long, env = "KNEETAP_WRITE_IDLE_TIMEOUT", default_value = "30s", value_parser = positive_duration)]
     write_idle_timeout: Duration,
 
     /// Time a connection may stay open with no requests
-    #[arg(long, default_value = "60s", value_parser = positive_duration)]
+    #[arg(long, env = "KNEETAP_IDLE_TIMEOUT", default_value = "60s", value_parser = positive_duration)]
     idle_timeout: Duration,
 
     /// Time allowed for work in progress to finish after a shutdown signal
-    #[arg(long, default_value = "10s", value_parser = humantime::parse_duration)]
+    #[arg(long, env = "KNEETAP_SHUTDOWN_TIMEOUT", default_value = "10s", value_parser = humantime::parse_duration)]
     shutdown_timeout: Duration,
 }
 
@@ -171,12 +187,24 @@ struct Healthcheck {
     url: Option<String>,
 
     /// Address of the local server, as given to `serve`
-    #[arg(long)]
+    #[arg(long, env = "KNEETAP_BIND")]
     bind: Option<IpAddr>,
 
-    /// Port of the local server
-    #[arg(long, default_value_t = 8080)]
-    port: u16,
+    /// HTTP port of the local server, as given to `serve`
+    #[arg(long, env = "KNEETAP_PORT")]
+    port: Option<u16>,
+
+    /// HTTPS port of the local server, as given to `serve`
+    #[arg(long, env = "KNEETAP_TLS_PORT")]
+    tls_port: Option<u16>,
+
+    /// The local server doesn't serve plain HTTP
+    #[arg(long, env = "KNEETAP_NO_HTTP", value_parser = BoolishValueParser::new())]
+    no_http: bool,
+
+    /// The local server doesn't serve HTTPS
+    #[arg(long, env = "KNEETAP_NO_TLS", value_parser = BoolishValueParser::new())]
+    no_tls: bool,
 
     /// Longest the whole check may take
     #[arg(long, default_value = "5s", value_parser = humantime::parse_duration)]
@@ -231,22 +259,108 @@ fn block_on(command: impl Future<Output = Result<()>>) -> Result<()> {
 }
 
 async fn run_healthcheck(check: Healthcheck) -> Result<()> {
-    let client = check
-        .tls
-        .apply(Client::builder().timeout(check.timeout))
-        .build()?;
+    let builder = check.tls.apply(Client::builder().timeout(check.timeout));
+    // A local server's certificate is usually generated, and this machine needs no proof of who it
+    // is. An explicit URL is always verified.
+    let client = if check.url.is_none() {
+        builder.danger_accept_invalid_certs()
+    } else {
+        builder
+    }
+    .build()?;
     let probe = async {
-        if let Some(url) = &check.url {
-            client.check_health(url).await
-        } else {
-            let url = format!("http://{}/health", probe_target(check.bind, check.port));
-            client.discover_health(&[url]).await
+        match &check.url {
+            Some(url) => client.check_health(url).await,
+            None => {
+                client
+                    .discover_health(&Endpoint::discover(&check).urls())
+                    .await
+            }
         }
     };
     tokio::time::timeout(check.timeout, probe)
         .await
         .context("health check timed out")??;
     Ok(())
+}
+
+/// Where a local server should be listening.
+#[derive(Debug)]
+struct Endpoint {
+    bind: Option<IpAddr>,
+    port: Option<u16>,
+    tls_port: Option<u16>,
+    no_http: bool,
+    no_tls: bool,
+}
+
+impl Endpoint {
+    /// Uses the command's own settings, or else those of the server this container is running.
+    fn discover(check: &Healthcheck) -> Self {
+        let endpoint = Self {
+            bind: check.bind,
+            port: check.port,
+            tls_port: check.tls_port,
+            no_http: check.no_http,
+            no_tls: check.no_tls,
+        };
+        if endpoint.is_unset() {
+            return container_endpoint().unwrap_or(endpoint);
+        }
+        endpoint
+    }
+
+    const fn is_unset(&self) -> bool {
+        self.bind.is_none()
+            && self.port.is_none()
+            && self.tls_port.is_none()
+            && !self.no_http
+            && !self.no_tls
+    }
+
+    /// Lists the URLs to try, HTTP first, since either listener may be the one that started.
+    ///
+    /// Only an implicit port can have moved to its fallback.
+    fn urls(&self) -> Vec<String> {
+        let candidates = |scheme, port: Option<u16>, default, fallback| {
+            let ports = port.map_or(vec![default, fallback], |port| vec![port]);
+            ports
+                .into_iter()
+                .map(move |port| format!("{scheme}://{}/health", probe_target(self.bind, port)))
+        };
+        let http = candidates("http", self.port, DEFAULT_HTTP_PORT, FALLBACK_HTTP_PORT);
+        let https = candidates("https", self.tls_port, DEFAULT_TLS_PORT, FALLBACK_TLS_PORT);
+        match (self.no_http, self.no_tls) {
+            (true, _) => https.collect(),
+            (_, true) => http.collect(),
+            _ => http.chain(https).collect(),
+        }
+    }
+}
+
+/// Reads PID 1's arguments, because `docker exec` and `HEALTHCHECK` don't inherit them.
+#[cfg(target_os = "linux")]
+fn container_endpoint() -> Option<Endpoint> {
+    let bytes = std::fs::read("/proc/1/cmdline").ok()?;
+    let arguments = bytes
+        .split(|&byte| byte == 0)
+        .filter(|argument| !argument.is_empty())
+        .map(|argument| String::from_utf8_lossy(argument).into_owned());
+    let Command::Serve(serve) = Cli::try_parse_from(arguments).ok()?.command else {
+        return None;
+    };
+    Some(Endpoint {
+        bind: serve.bind,
+        port: serve.port,
+        tls_port: serve.tls_port,
+        no_http: serve.no_http,
+        no_tls: serve.no_tls,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn container_endpoint() -> Option<Endpoint> {
+    None
 }
 
 /// Finds where to reach a local server, since a wildcard address can't be connected to.
@@ -292,14 +406,48 @@ fn run_server(serve: &Serve) -> Result<()> {
     if let Some(name) = &serve.name {
         builder = builder.name(name);
     }
-    if !serve.no_http {
-        builder = builder.http_listener(listen(serve.bind, serve.port)?);
+    let strictness = if serve.strict {
+        Strictness::Strict
+    } else {
+        Strictness::Lenient
+    };
+    let mut degradations = Vec::new();
+    let http = if serve.no_http {
+        None
+    } else {
+        let choice = PortChoice {
+            explicit: serve.port,
+            default: DEFAULT_HTTP_PORT,
+            fallback: FALLBACK_HTTP_PORT,
+            degradation: "http_bind_failed",
+        };
+        startup::open(serve.bind, choice, strictness, &mut degradations)?
+    };
+    let https = if serve.no_tls {
+        None
+    } else {
+        let choice = PortChoice {
+            explicit: serve.tls_port,
+            default: DEFAULT_TLS_PORT,
+            fallback: FALLBACK_TLS_PORT,
+            degradation: "https_bind_failed",
+        };
+        startup::open(serve.bind, choice, strictness, &mut degradations)?
+    };
+    let tls = match https {
+        Some(_) => usable_tls(serve, &mut degradations)?,
+        None => None,
+    };
+    if serve.cacert.is_some() && http.is_some() {
+        tracing::warn!("listener.http.unauthenticated");
     }
-    if let Some(port) = serve.tls_port {
-        builder = builder
-            .https_listener(listen(serve.bind, port)?)
-            .tls(tls_config(serve));
+    if let Some(listener) = http {
+        builder = builder.http_listener(listener);
     }
+    if let (Some(listener), Some(tls)) = (https, tls) {
+        builder = builder.https_listener(listener).tls(tls);
+    }
+    builder = builder.degradations(degradations);
     let server = builder.build()?;
     // Stdout is the interface scripts use to find the port, so these aren't log events.
     for url in server.urls() {
@@ -371,10 +519,28 @@ async fn forward_hangups(reload: ReloadHandle) {
     }
 }
 
-/// Binds a socket, naming the address in the error because a server may bind several.
-fn listen(address: IpAddr, port: u16) -> Result<TcpListener> {
-    TcpListener::bind((address, port))
-        .with_context(|| format!("couldn't listen on {address}:{port}"))
+/// Chooses the TLS configuration to serve, or `None` to go without HTTPS.
+///
+/// An unusable certificate falls back to a generated one, which still encrypts. A broken client
+/// authority never does: HTTPS stops rather than serving clients it was told to authenticate.
+fn usable_tls(serve: &Serve, degradations: &mut Vec<String>) -> Result<Option<TlsConfig>> {
+    let tls = tls_config(serve);
+    let Err(error) = tls.validate() else {
+        return Ok(Some(tls));
+    };
+    if serve.strict {
+        return Err(error.into());
+    }
+    tracing::warn!(%error, "tls.setup.failed");
+    if error.is_tls_identity() {
+        let generated = tls.with_generated_identity();
+        if generated.validate().is_ok() {
+            degradations.push("server_identity_fallback".to_owned());
+            return Ok(Some(generated));
+        }
+    }
+    degradations.push("tls_setup_failed".to_owned());
+    Ok(None)
 }
 
 fn tls_config(serve: &Serve) -> TlsConfig {
@@ -394,6 +560,31 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[rstest]
+    #[case(false, false, &[
+        "http://127.0.0.1:80/health",
+        "http://127.0.0.1:8080/health",
+        "https://127.0.0.1:443/health",
+        "https://127.0.0.1:8443/health",
+    ])]
+    #[case(true, false, &["https://127.0.0.1:443/health", "https://127.0.0.1:8443/health"])]
+    #[case(false, true, &["http://127.0.0.1:80/health", "http://127.0.0.1:8080/health"])]
+    fn healthcheck_tries_each_listener_that_may_have_started(
+        #[case] no_http: bool,
+        #[case] no_tls: bool,
+        #[case] urls: &[&str],
+    ) {
+        let endpoint = Endpoint {
+            bind: None,
+            port: None,
+            tls_port: None,
+            no_http,
+            no_tls,
+        };
+
+        assert_eq!(endpoint.urls(), urls);
+    }
 
     #[test]
     fn terminal_escapes_in_reports_are_shown_rather_than_run() {

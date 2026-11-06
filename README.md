@@ -6,7 +6,7 @@ looked like when it arrived.
 It's under active development. To try it:
 
 ```sh
-cargo run -p kneetap -- serve --port 8080
+cargo run -p kneetap -- serve --port 8080 --no-tls
 curl localhost:8080/anything
 ```
 
@@ -36,13 +36,13 @@ reflection, so `grpcurl -plaintext localhost:8080 kneetap.v1.Reporter/GetReport`
 
 ## TLS
 
-`--tls-port` also serves HTTPS, with a generated self-signed certificate unless you supply one.
+kneetap serves HTTP and HTTPS, using a generated self-signed certificate unless you supply one.
 Reports show the negotiated session and any client certificate.
 
 ```sh
-kneetap serve --tls-port 8443
-kneetap serve --tls-port 8443 --cert server.pem --key server-key.pem
-kneetap serve --tls-port 8443 --no-http --cacert clients.pem
+kneetap serve --port 8080 --tls-port 8443
+kneetap serve --cert server.pem --key server-key.pem
+kneetap serve --no-http --cacert clients.pem
 kneetap report https://localhost:8443 --insecure
 ```
 
@@ -71,6 +71,22 @@ watch counts as a request. Run `kneetap serve --help` to change any of these.
 | Request body and WebSocket message | 1 MiB each |
 | `/data` response | 10 GB |
 | `?wait=` delay | 5 minutes |
+
+## Startup
+
+kneetap tries to start whatever happens, because it's often deployed to find out what's wrong.
+Reports list what it worked around under `serverStatus.degradations`.
+
+| Problem | What happens |
+| --- | --- |
+| Port 80 or 443 can't be bound | Moves to 8080 or 8443, unless you set the port yourself |
+| A listener can't start | The other one serves |
+| The certificate or key is unusable | Generates a certificate |
+| The `--cacert` bundle is unusable | HTTPS stays off, and it never accepts any client instead |
+
+`--strict` exits on any of these. By default kneetap listens on all IPv6 and IPv4 addresses. Every
+`serve` option can also be set with a `KNEETAP_` variable, such as `KNEETAP_PORT`. Flags accept
+values such as `true`, `false`, `1`, and `0`.
 
 ## Logs
 

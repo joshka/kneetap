@@ -81,7 +81,7 @@ impl Server {
         let websockets = TaskTracker::new();
         let (reporter, grpc_health) = tonic_health::server::health_reporter();
         let settings = self.settings;
-        let status = Status::default();
+        let status = Status::new(settings.degradations);
         let tls = self.tls.zip(settings.tls);
         let certificates = tls.map(|(tls, config)| Certificates::new(tls, config, status.clone()));
         let certificates = certificates.map(Arc::new);
@@ -138,6 +138,7 @@ pub struct ServerBuilder {
     tls: Option<TlsConfig>,
     reload_interval: Duration,
     limits: Limits,
+    degradations: Vec<String>,
 }
 
 impl Default for ServerBuilder {
@@ -155,6 +156,7 @@ impl Default for ServerBuilder {
             tls: None,
             reload_interval: DEFAULT_RELOAD_INTERVAL,
             limits: Limits::default(),
+            degradations: Vec::new(),
         }
     }
 }
@@ -284,6 +286,13 @@ impl ServerBuilder {
     #[must_use]
     pub const fn shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.limits.shutdown_timeout = timeout;
+        self
+    }
+
+    /// Records what the caller worked around at startup, so that reports can show it.
+    #[must_use]
+    pub fn degradations(mut self, degradations: Vec<String>) -> Self {
+        self.degradations = degradations;
         self
     }
 
