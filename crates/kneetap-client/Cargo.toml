@@ -20,6 +20,6 @@ webpki-roots.workspace = true
 
 [dev-dependencies]
 axum = { workspace = true, features = ["http1", "tokio"] }
-kneetap-server.workspace = true
+kneetap-server = { path = "../kneetap-server" }
 rstest.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt"] }
