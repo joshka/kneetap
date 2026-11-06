@@ -86,8 +86,8 @@ async fn report_with_options(
     parts: &Parts,
     body: Body,
 ) -> Result<Response, Rejection> {
-    let Query(query) = Query::<ReportQuery>::try_from_uri(&parts.uri)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid query\n"))?;
+    let parsed = Query::<ReportQuery>::try_from_uri(&parts.uri);
+    let Query(query) = parsed.map_err(|_| (StatusCode::BAD_REQUEST, "invalid query\n"))?;
     let environment = requested_environment(context, query.env)?;
     let delay = requested_wait(context, query.wait.as_deref())?;
     // Reading first sends any `100 Continue`, so a client's upload isn't held up by the delay it
@@ -126,8 +126,8 @@ fn requested_wait(context: &Context, wait: Option<&str>) -> Result<Duration, Rej
     let Some(wait) = wait else {
         return Ok(Duration::ZERO);
     };
-    let wait =
-        humantime::parse_duration(wait).map_err(|_| (StatusCode::BAD_REQUEST, "invalid wait\n"))?;
+    let parsed = humantime::parse_duration(wait);
+    let wait = parsed.map_err(|_| (StatusCode::BAD_REQUEST, "invalid wait\n"))?;
     if wait > context.max_wait {
         return Err((StatusCode::BAD_REQUEST, "wait exceeds maximum\n"));
     }
