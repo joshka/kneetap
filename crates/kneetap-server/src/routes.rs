@@ -12,7 +12,7 @@ use itertools::Itertools;
 use serde::Deserialize;
 
 use crate::host::Host;
-use crate::report;
+use crate::{data, report};
 
 /// Settings and host identity that every request reads.
 #[derive(Debug)]
@@ -22,6 +22,7 @@ pub struct Context {
     pub max_body_size: usize,
     pub max_wait: Duration,
     pub enable_env: bool,
+    pub max_data_size: u64,
 }
 
 /// The parameters `/` and `/api` own. Any others belong to the client and are only reported.
@@ -52,10 +53,12 @@ async fn handle(State(context): State<Arc<Context>>, request: Request) -> Respon
     let mut response = response.unwrap_or_else(|(status, message)| text(status, message));
     if head_only {
         // An empty body would otherwise be announced as length 0.
-        if let Some(length) = response.body().size_hint().exact() {
-            response
-                .headers_mut()
-                .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+        let length = response.body().size_hint().exact();
+        let headers = response.headers_mut();
+        if let Some(length) = length
+            && !headers.contains_key(header::CONTENT_LENGTH)
+        {
+            headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
         }
         *response.body_mut() = Body::empty();
     }
@@ -71,6 +74,7 @@ async fn dispatch(context: &Context, request: Request) -> Result<Response, Rejec
     }
     match path {
         "/bench" => Ok(text(StatusCode::OK, "1")),
+        "/data" => data::respond(&parts, context.max_data_size),
         "/" | "/api" => report_with_options(context, &parts, body).await,
         // Other paths belong to whatever application is being tested, so their query parameters
         // are reported, never interpreted.
@@ -137,7 +141,7 @@ fn requested_wait(context: &Context, wait: Option<&str>) -> Result<Duration, Rej
 /// Returns the methods a path allows when it refuses this one.
 fn disallowed(path: &str, method: &Method) -> Option<&'static str> {
     let allow = match path {
-        "/api" | "/bench" => "GET, HEAD",
+        "/api" | "/bench" | "/data" => "GET, HEAD",
         // Reports accept any method, except CONNECT, which asks for a tunnel.
         _ if method == Method::CONNECT => "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE",
         _ => return None,
@@ -268,6 +272,7 @@ mod tests {
             max_body_size: MAX_BODY_SIZE,
             max_wait: Duration::from_secs(60),
             enable_env: false,
+            max_data_size: 1000,
         }
     }
 
@@ -458,6 +463,16 @@ mod tests {
     #[case("/?wait=-1s")]
     #[case("/?wait=2m")]
     #[case("/?wait=%xx")]
+    #[case("/data?size=x")]
+    #[case("/data?size=1001")]
+    #[case("/data?attachment=1")]
+    #[case("/data?size=")]
+    #[case("/data?size=%xx")]
+    #[case("/data?size=%FF")]
+    #[case("/data?size=1&size=2")]
+    #[case("/data?unit=")]
+    #[case("/data?unit=%xx")]
+    #[case("/data?unit=KB&unit=MB")]
     #[tokio::test]
     async fn invalid_parameters_on_owned_paths_are_refused(#[case] target: &str) {
         let response = send(request("GET", target, "")).await;
@@ -481,11 +496,47 @@ mod tests {
     #[case("/x?wait=soon")]
     #[case("/x?env=true")]
     #[case("/bench?env=true")]
+    #[case("/x?attachment=1")]
     #[tokio::test]
     async fn parameters_a_path_does_not_own_are_ignored(#[case] target: &str) {
         let response = send(request("GET", target, "")).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn data_serves_the_requested_size() {
+        let response = send(request("GET", "/data?size=16", "")).await;
+
+        assert_eq!(body_text(response).await, "000000000000000\n");
+    }
+
+    #[tokio::test]
+    async fn head_data_reports_the_length_without_a_body() {
+        let response = send(request("HEAD", "/data?size=16", "")).await;
+
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "16");
+        assert_eq!(body_text(response).await, "");
+    }
+
+    #[tokio::test]
+    async fn head_not_modified_keeps_the_real_length() {
+        let mut request = request("HEAD", "/data?size=16", "");
+        let tag = HeaderValue::from_static("\"kneetap-16\"");
+        request.headers_mut().insert(header::IF_NONE_MATCH, tag);
+
+        let response = send(request).await;
+
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "16");
+    }
+
+    #[tokio::test]
+    async fn data_refuses_methods_other_than_get_and_head() {
+        let response = send(request("POST", "/data", "")).await;
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(response.headers()[header::ALLOW], "GET, HEAD");
     }
 
     #[rstest]
