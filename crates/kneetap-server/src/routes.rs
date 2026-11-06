@@ -18,6 +18,9 @@ use crate::host::Host;
 use crate::status::Status;
 use crate::{body, data, echo, report};
 
+/// The description of this API, served at `/openapi.yaml`.
+const OPENAPI: &str = include_str!("../openapi.yaml");
+
 /// Settings and host identity that every request reads.
 #[derive(Debug)]
 pub struct Context {
@@ -94,6 +97,7 @@ async fn dispatch(context: &Context, request: Request) -> Result<Response, Rejec
     }
     match path {
         "/bench" => Ok(text(StatusCode::OK, "1")),
+        "/openapi.yaml" => Ok(openapi()),
         "/health" => health::respond(&context.health, &parts, body, context.body_timeout).await,
         "/data" => data::respond(&parts, context.max_data_size),
         "/" | "/api" => report_with_options(context, &parts, body).await,
@@ -168,12 +172,16 @@ fn is_grpc(parts: &Parts) -> bool {
         .is_some_and(|value| value.starts_with("application/grpc"))
 }
 
+fn openapi() -> Response {
+    with_type(StatusCode::OK, "application/yaml", OPENAPI.into())
+}
+
 /// Returns the methods a path allows when it refuses this one.
 fn disallowed(path: &str, method: &Method) -> Option<&'static str> {
     let allow = match path {
         "/health" => "GET, HEAD, POST",
         "/echo" => "GET",
-        "/api" | "/bench" | "/data" => "GET, HEAD",
+        "/api" | "/bench" | "/data" | "/openapi.yaml" => "GET, HEAD",
         // Reports accept any method, except CONNECT, which asks for a tunnel.
         _ if method == Method::CONNECT => "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE",
         _ => return None,
@@ -286,7 +294,10 @@ fn with_type(status: StatusCode, content_type: &'static str, body: Body) -> Resp
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use axum::http::Request;
+    use kneetap_api::{CertificateSource, ClientVerification, TlsReport};
     use rstest::rstest;
     use tower::ServiceExt;
 
@@ -643,5 +654,110 @@ mod tests {
         let response = send(request("CONNECT", "/echo", "")).await;
 
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    fn spec() -> serde_json::Value {
+        serde_saphyr::from_str(OPENAPI).unwrap()
+    }
+
+    /// Returns the field names of an object, so that schemas and reports can be compared.
+    fn keys(value: &serde_json::Value) -> BTreeSet<&str> {
+        let object = value.as_object().unwrap();
+        object.keys().map(String::as_str).collect()
+    }
+
+    /// Follows every `$ref` in a value, returning the ones that don't resolve.
+    fn broken_references(spec: &serde_json::Value, value: &serde_json::Value) -> Vec<String> {
+        match value {
+            serde_json::Value::Object(map) => map
+                .iter()
+                .flat_map(|(key, value)| broken_field_references(spec, key, value))
+                .collect(),
+            serde_json::Value::Array(items) => items
+                .iter()
+                .flat_map(|value| broken_references(spec, value))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Checks one object field, which is either a `$ref` or a value that may contain them.
+    fn broken_field_references(
+        spec: &serde_json::Value,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Vec<String> {
+        let Some(target) = value.as_str().filter(|_| key == "$ref") else {
+            return broken_references(spec, value);
+        };
+        let pointer = target.trim_start_matches('#');
+        let found = spec.pointer(pointer).is_some();
+        (!found).then(|| target.to_owned()).into_iter().collect()
+    }
+
+    #[test]
+    fn every_openapi_reference_resolves() {
+        let spec = spec();
+
+        assert_eq!(broken_references(&spec, &spec), Vec::<String>::new());
+    }
+
+    #[test]
+    fn openapi_documents_exactly_the_served_paths() {
+        let spec = spec();
+
+        assert_eq!(
+            keys(&spec["paths"]),
+            BTreeSet::from([
+                "/",
+                "/api",
+                "/bench",
+                "/data",
+                "/echo",
+                "/health",
+                "/openapi.yaml"
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn the_report_schema_matches_a_real_report() {
+        let context = Context {
+            enable_env: true,
+            ..context().await
+        };
+        let response = send_to(context, request("GET", "/api?env=true", "")).await;
+        let report: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+        let spec = spec();
+        let schemas = &spec["components"]["schemas"];
+
+        assert_eq!(keys(&report), keys(&schemas["Report"]["properties"]));
+        let status_schema = &schemas["ServerStatus"]["properties"];
+        assert_eq!(keys(&report["serverStatus"]), keys(status_schema));
+    }
+
+    #[test]
+    fn the_tls_schema_matches_a_real_report() {
+        let tls = TlsReport {
+            version: "TLSv1_3".to_owned(),
+            cipher: "TLS13_AES_128_GCM_SHA256".to_owned(),
+            alpn: None,
+            certificate_source: CertificateSource::Generated,
+            client_verification: ClientVerification::Absent,
+            client_subjects: Vec::new(),
+        };
+        let tls = serde_json::to_value(tls).unwrap();
+        let spec = spec();
+        let schema = &spec["components"]["schemas"]["Tls"]["properties"];
+
+        assert_eq!(keys(&tls), keys(schema));
+    }
+
+    #[tokio::test]
+    async fn the_description_is_served_as_yaml() {
+        let response = send(request("GET", "/openapi.yaml", "")).await;
+
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/yaml");
+        assert_eq!(body_text(response).await, OPENAPI);
     }
 }
