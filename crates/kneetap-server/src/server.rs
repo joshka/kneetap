@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::Error;
+use crate::health::Health;
 use crate::host::Host;
 use crate::routes::{self, Context};
 
@@ -134,6 +135,7 @@ impl ServerBuilder {
             max_wait: self.max_wait,
             enable_env: self.enable_env,
             max_data_size: self.max_data_size,
+            health: Health::default(),
         };
         Ok(Server {
             listener,

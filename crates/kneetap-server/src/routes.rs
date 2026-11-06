@@ -11,6 +11,7 @@ use axum::response::Response;
 use itertools::Itertools;
 use serde::Deserialize;
 
+use crate::health::{self, Health};
 use crate::host::Host;
 use crate::{data, report};
 
@@ -23,6 +24,7 @@ pub struct Context {
     pub max_wait: Duration,
     pub enable_env: bool,
     pub max_data_size: u64,
+    pub health: Health,
 }
 
 /// The parameters `/` and `/api` own. Any others belong to the client and are only reported.
@@ -74,6 +76,7 @@ async fn dispatch(context: &Context, request: Request) -> Result<Response, Rejec
     }
     match path {
         "/bench" => Ok(text(StatusCode::OK, "1")),
+        "/health" => health::respond(&context.health, &parts, body).await,
         "/data" => data::respond(&parts, context.max_data_size),
         "/" | "/api" => report_with_options(context, &parts, body).await,
         // Other paths belong to whatever application is being tested, so their query parameters
@@ -141,6 +144,7 @@ fn requested_wait(context: &Context, wait: Option<&str>) -> Result<Duration, Rej
 /// Returns the methods a path allows when it refuses this one.
 fn disallowed(path: &str, method: &Method) -> Option<&'static str> {
     let allow = match path {
+        "/health" => "GET, HEAD, POST",
         "/api" | "/bench" | "/data" => "GET, HEAD",
         // Reports accept any method, except CONNECT, which asks for a tunnel.
         _ if method == Method::CONNECT => "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE",
@@ -273,6 +277,7 @@ mod tests {
             max_wait: Duration::from_secs(60),
             enable_env: false,
             max_data_size: 1000,
+            health: Health::default(),
         }
     }
 
@@ -350,6 +355,7 @@ mod tests {
     #[rstest]
     #[case("POST", "/api", "GET, HEAD")]
     #[case("DELETE", "/bench", "GET, HEAD")]
+    #[case("OPTIONS", "/health", "GET, HEAD, POST")]
     #[tokio::test]
     async fn fixed_paths_list_their_methods_when_refusing(
         #[case] method: &str,
@@ -496,6 +502,7 @@ mod tests {
     #[case("/x?wait=soon")]
     #[case("/x?env=true")]
     #[case("/bench?env=true")]
+    #[case("/health?wait=never")]
     #[case("/x?attachment=1")]
     #[tokio::test]
     async fn parameters_a_path_does_not_own_are_ignored(#[case] target: &str) {
