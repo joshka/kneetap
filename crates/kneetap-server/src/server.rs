@@ -10,6 +10,7 @@ use crate::routes::{self, Context};
 
 const DEFAULT_MAX_BODY_SIZE: usize = 1 << 20;
 const DEFAULT_MAX_DATA_SIZE: u64 = 10_000_000_000;
+const DEFAULT_MAX_WS_MESSAGE_SIZE: usize = 1 << 20;
 const DEFAULT_MAX_WAIT: Duration = Duration::from_mins(5);
 
 /// A bound server that hasn't started handling requests.
@@ -68,6 +69,8 @@ pub struct ServerBuilder {
     max_wait: Duration,
     enable_env: bool,
     max_data_size: u64,
+    allow_any_ws_origin: bool,
+    max_ws_message_size: usize,
 }
 
 impl Default for ServerBuilder {
@@ -78,6 +81,8 @@ impl Default for ServerBuilder {
             max_wait: DEFAULT_MAX_WAIT,
             enable_env: false,
             max_data_size: DEFAULT_MAX_DATA_SIZE,
+            allow_any_ws_origin: false,
+            max_ws_message_size: DEFAULT_MAX_WS_MESSAGE_SIZE,
         }
     }
 }
@@ -119,6 +124,21 @@ impl ServerBuilder {
         self
     }
 
+    /// Lets browsers open `/echo` from any site, which is off by default so that a web page can't
+    /// reach a server only its visitor can see.
+    #[must_use]
+    pub const fn allow_any_ws_origin(mut self) -> Self {
+        self.allow_any_ws_origin = true;
+        self
+    }
+
+    /// Sets the largest WebSocket message accepted. The default is 1 MiB.
+    #[must_use]
+    pub const fn max_ws_message_size(mut self, bytes: usize) -> Self {
+        self.max_ws_message_size = bytes;
+        self
+    }
+
     /// Binds the listening socket without serving yet.
     ///
     /// This is synchronous so a process can bind before starting a runtime, then drop privileges.
@@ -136,6 +156,8 @@ impl ServerBuilder {
             enable_env: self.enable_env,
             max_data_size: self.max_data_size,
             health: Health::default(),
+            allow_any_ws_origin: self.allow_any_ws_origin,
+            max_ws_message_size: self.max_ws_message_size,
         };
         Ok(Server {
             listener,

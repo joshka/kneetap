@@ -6,14 +6,14 @@ use axum::Router;
 use axum::body::{self, Body, Bytes, HttpBody};
 use axum::extract::{ConnectInfo, Query, Request, State};
 use axum::http::request::Parts;
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderValue, Method, StatusCode, Version, header};
 use axum::response::Response;
 use itertools::Itertools;
 use serde::Deserialize;
 
 use crate::health::{self, Health};
 use crate::host::Host;
-use crate::{data, report};
+use crate::{data, echo, report};
 
 /// Settings and host identity that every request reads.
 #[derive(Debug)]
@@ -25,6 +25,8 @@ pub struct Context {
     pub enable_env: bool,
     pub max_data_size: u64,
     pub health: Health,
+    pub allow_any_ws_origin: bool,
+    pub max_ws_message_size: usize,
 }
 
 /// The parameters `/` and `/api` own. Any others belong to the client and are only reported.
@@ -69,7 +71,12 @@ async fn handle(State(context): State<Arc<Context>>, request: Request) -> Respon
 
 /// Chooses a response by path.
 async fn dispatch(context: &Context, request: Request) -> Result<Response, Rejection> {
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
+    // HTTP/2 WebSockets start with CONNECT (RFC 8441 section 4), and the upgrade validates them.
+    let h2_connect = parts.method == Method::CONNECT && parts.version == Version::HTTP_2;
+    if parts.uri.path() == "/echo" && (parts.method == Method::GET || h2_connect) {
+        return echo::upgrade(context, &mut parts).await;
+    }
     let path = parts.uri.path();
     if let Some(allow) = disallowed(path, &parts.method) {
         return Ok(method_not_allowed(allow));
@@ -145,6 +152,7 @@ fn requested_wait(context: &Context, wait: Option<&str>) -> Result<Duration, Rej
 fn disallowed(path: &str, method: &Method) -> Option<&'static str> {
     let allow = match path {
         "/health" => "GET, HEAD, POST",
+        "/echo" => "GET",
         "/api" | "/bench" | "/data" => "GET, HEAD",
         // Reports accept any method, except CONNECT, which asks for a tunnel.
         _ if method == Method::CONNECT => "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, TRACE",
@@ -278,6 +286,8 @@ mod tests {
             enable_env: false,
             max_data_size: 1000,
             health: Health::default(),
+            allow_any_ws_origin: false,
+            max_ws_message_size: 1024,
         }
     }
 
@@ -574,5 +584,22 @@ mod tests {
         let response = send(request).await;
 
         assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
+    }
+
+    #[tokio::test]
+    async fn http2_connect_to_echo_reaches_the_upgrade() {
+        let mut request = request("CONNECT", "/echo", "");
+        *request.version_mut() = Version::HTTP_2;
+
+        let response = send(request).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http1_connect_to_echo_is_refused() {
+        let response = send(request("CONNECT", "/echo", "")).await;
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 }
