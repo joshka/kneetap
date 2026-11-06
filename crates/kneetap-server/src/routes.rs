@@ -47,9 +47,8 @@ pub fn router(context: Arc<Context>) -> Router {
 /// headers match the `GET` they stand in for.
 async fn handle(State(context): State<Arc<Context>>, request: Request) -> Response {
     let head_only = request.method() == Method::HEAD;
-    let mut response = dispatch(&context, request)
-        .await
-        .unwrap_or_else(|(status, message)| text(status, message));
+    let response = dispatch(&context, request).await;
+    let mut response = response.unwrap_or_else(|(status, message)| text(status, message));
     if head_only {
         // An empty body would otherwise be announced as length 0.
         if let Some(length) = response.body().size_hint().exact() {
@@ -107,10 +106,8 @@ fn requested_environment(
         return Ok(None);
     }
     if !context.enable_env {
-        return Err((
-            StatusCode::FORBIDDEN,
-            "environment disclosure is disabled\n",
-        ));
+        let message = "environment disclosure is disabled\n";
+        return Err((StatusCode::FORBIDDEN, message));
     }
     let mut lines: Vec<_> = std::env::vars_os()
         .map(|(name, value)| format!("{}={}", name.display(), value.display()))
@@ -146,9 +143,8 @@ fn disallowed(path: &str, method: &Method) -> Option<&'static str> {
 
 /// Collects the body up to the configured limit, reporting any read failure as too large.
 async fn read_body(context: &Context, body: Body) -> Result<Bytes, Rejection> {
-    body::to_bytes(body, context.max_body_size)
-        .await
-        .map_err(|_| (StatusCode::PAYLOAD_TOO_LARGE, "body exceeds maximum\n"))
+    let bytes = body::to_bytes(body, context.max_body_size).await;
+    bytes.map_err(|_| (StatusCode::PAYLOAD_TOO_LARGE, "body exceeds maximum\n"))
 }
 
 /// Reports the request as text or JSON. Reports are never cached, because each one describes a
@@ -164,14 +160,8 @@ fn report_response(
         .get::<ConnectInfo<SocketAddr>>()
         .expect("the listener attaches the peer address")
         .0;
-    let report = report::build(
-        context.name.clone(),
-        &context.host,
-        peer,
-        environment,
-        parts,
-        bytes,
-    );
+    let name = context.name.clone();
+    let report = report::build(name, &context.host, peer, environment, parts, bytes);
     let is_api = parts.uri.path() == "/api";
     // Repeated fields mean the same as one comma-separated list (RFC 9110 section 5.3).
     let accept = parts
