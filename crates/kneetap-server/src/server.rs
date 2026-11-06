@@ -103,8 +103,8 @@ impl ServerBuilder {
     /// Allows clients to read the environment with `?env=true`, which is off by default because
     /// environment variables often hold secrets.
     #[must_use]
-    pub const fn enable_env(mut self, enable: bool) -> Self {
-        self.enable_env = enable;
+    pub const fn enable_env(mut self) -> Self {
+        self.enable_env = true;
         self
     }
 

@@ -89,7 +89,7 @@ async fn report_with_options(
 ) -> Result<Response, Rejection> {
     let parsed = Query::<ReportQuery>::try_from_uri(&parts.uri);
     let Query(query) = parsed.map_err(|_| (StatusCode::BAD_REQUEST, "invalid query\n"))?;
-    let environment = requested_environment(context, query.env)?;
+    let environment = requested_environment(context, &query)?;
     let delay = requested_wait(context, query.wait.as_deref())?;
     // Reading first sends any `100 Continue`, so a client's upload isn't held up by the delay it
     // asked for on the response.
@@ -101,9 +101,9 @@ async fn report_with_options(
 /// Returns the environment if the client asked for it, which the operator must have allowed.
 fn requested_environment(
     context: &Context,
-    requested: bool,
+    query: &ReportQuery,
 ) -> Result<Option<Vec<String>>, Rejection> {
-    if !requested {
+    if !query.env {
         return Ok(None);
     }
     if !context.enable_env {
@@ -258,14 +258,8 @@ mod tests {
 
     const MAX_BODY_SIZE: usize = 4;
 
-    async fn send(request: Request<Body>) -> Response {
-        send_with(request, false).await
-    }
-
-    async fn send_with(mut request: Request<Body>, enable_env: bool) -> Response {
-        let peer: SocketAddr = "10.0.0.9:4000".parse().unwrap();
-        request.extensions_mut().insert(ConnectInfo(peer));
-        let context = Context {
+    fn context() -> Context {
+        Context {
             name: Some("blue".to_owned()),
             host: Host {
                 name: Some("web-1".to_owned()),
@@ -273,8 +267,17 @@ mod tests {
             },
             max_body_size: MAX_BODY_SIZE,
             max_wait: Duration::from_secs(60),
-            enable_env,
-        };
+            enable_env: false,
+        }
+    }
+
+    async fn send(request: Request<Body>) -> Response {
+        send_to(context(), request).await
+    }
+
+    async fn send_to(context: Context, mut request: Request<Body>) -> Response {
+        let peer: SocketAddr = "10.0.0.9:4000".parse().unwrap();
+        request.extensions_mut().insert(ConnectInfo(peer));
         router(Arc::new(context)).oneshot(request).await.unwrap()
     }
 
@@ -416,7 +419,12 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_environment_is_reported() {
-        let response = send_with(request("GET", "/api?env=true", ""), true).await;
+        let context = Context {
+            enable_env: true,
+            ..context()
+        };
+
+        let response = send_to(context, request("GET", "/api?env=true", "")).await;
 
         let json: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
         assert_eq!(json["environment"], serde_json::json!(environment_lines()));
