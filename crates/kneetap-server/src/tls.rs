@@ -171,12 +171,10 @@ impl Material {
         TlsReport {
             version: connection
                 .protocol_version()
-                .map(|version| format!("{version:?}"))
-                .unwrap_or_default(),
+                .map_or_default(|version| format!("{version:?}")),
             cipher: connection
                 .negotiated_cipher_suite()
-                .map(|cipher| format!("{:?}", cipher.suite()))
-                .unwrap_or_default(),
+                .map_or_default(|cipher| format!("{:?}", cipher.suite())),
             alpn: connection
                 .alpn_protocol()
                 .map(|alpn| String::from_utf8_lossy(alpn).into_owned()),
