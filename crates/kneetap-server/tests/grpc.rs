@@ -59,6 +59,8 @@ async fn ping_and_http_share_the_port() {
 
     client.ping(PingRequest {}).await.unwrap();
 
+    // Plain reqwest in a test has no provider of its own, so a global one is fine here.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let bench = reqwest::get(format!("{url}/bench")).await.unwrap();
     assert_eq!(bench.text().await.unwrap(), "1");
 }
@@ -68,6 +70,8 @@ async fn grpc_health_follows_the_http_status() {
     let url = start();
     assert_eq!(serving_status(&url).await, ServingStatus::Serving as i32);
 
+    // Plain reqwest in a test has no provider of its own, so a global one is fine here.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::new()
         .post(format!("{url}/health"))
         .header("content-type", "application/json")

@@ -1,9 +1,11 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use kneetap_api::{HEALTH_HEADER, HEALTH_MARKER, Report};
 use reqwest::redirect::Policy;
 
 use crate::Error;
+use crate::tls::{self, Trust};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -102,12 +104,16 @@ fn verdict(url: &str, response: &reqwest::Response) -> Result<(), Error> {
 #[derive(Debug)]
 pub struct ClientBuilder {
     timeout: Duration,
+    trust: Trust,
+    identity: Option<(PathBuf, PathBuf)>,
 }
 
 impl Default for ClientBuilder {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
+            trust: Trust::default(),
+            identity: None,
         }
     }
 }
@@ -120,6 +126,35 @@ impl ClientBuilder {
         self
     }
 
+    /// Accepts any server certificate.
+    ///
+    /// Use this for a server's generated certificate on a trusted path, such as loopback. The
+    /// connection is encrypted, but the server's identity isn't checked. This replaces
+    /// any earlier [`root_certificates_file`](Self::root_certificates_file).
+    #[must_use]
+    pub fn danger_accept_invalid_certs(mut self) -> Self {
+        self.trust = Trust::Any;
+        self
+    }
+
+    /// Trusts only the authorities in this PEM bundle, instead of the built-in public roots.
+    #[must_use]
+    pub fn root_certificates_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.trust = Trust::Bundle(path.into());
+        self
+    }
+
+    /// Presents a client certificate from PEM files.
+    #[must_use]
+    pub fn identity_files(
+        mut self,
+        certificate: impl Into<PathBuf>,
+        key: impl Into<PathBuf>,
+    ) -> Self {
+        self.identity = Some((certificate.into(), key.into()));
+        self
+    }
+
     /// Builds the client.
     ///
     /// Redirects aren't followed and proxies aren't used, because a probe should report what the
@@ -127,12 +162,14 @@ impl ClientBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if the HTTP client can't be initialized.
+    /// Returns an error if a certificate can't be read, or the HTTP client can't be initialized.
     pub fn build(self) -> Result<Client, Error> {
+        let tls = tls::config(&self.trust, self.identity.as_ref())?;
         let http = reqwest::Client::builder()
             .no_proxy()
             .redirect(Policy::none())
             .timeout(self.timeout)
+            .tls_backend_preconfigured(tls)
             .build()
             .map_err(Error::build)?;
         Ok(Client { http })

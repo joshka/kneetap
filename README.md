@@ -34,6 +34,22 @@ only if a local server is healthy.
 gRPC shares the same port, with the `kneetap.v1.Reporter` service, standard health checks, and
 reflection, so `grpcurl -plaintext localhost:8080 kneetap.v1.Reporter/GetReport` works.
 
+## TLS
+
+`--tls-port` also serves HTTPS, with a generated self-signed certificate unless you supply one.
+Reports show the negotiated session and any client certificate.
+
+```sh
+kneetap serve --tls-port 8443
+kneetap serve --tls-port 8443 --cert server.pem --key server-key.pem
+kneetap serve --tls-port 8443 --no-http --cacert clients.pem
+kneetap report https://localhost:8443 --insecure
+```
+
+Without `--cacert`, a client certificate is optional and reported as `unverified`, which means
+nothing vouches for it. With `--cacert`, HTTPS clients must present a certificate it signed, and a
+broken bundle stops the server rather than accepting any client.
+
 See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
 
 ## License

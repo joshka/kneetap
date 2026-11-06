@@ -28,6 +28,8 @@ async fn unrelated(status: StatusCode) -> String {
 /// Starts a kneetap server reporting `status` from its health endpoint.
 async fn with_health(status: u16) -> String {
     let url = format!("http://{}/health", kneetap("health"));
+    // Plain reqwest in a test has no provider of its own, so a global one is fine here.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::new()
         .post(&url)
         .header("content-type", "application/json")

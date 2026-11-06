@@ -6,6 +6,8 @@ use std::time::Duration;
 use crate::health::Health;
 use crate::host::Host;
 use crate::routes::{self, Context};
+use crate::tls::{Material, TlsConfig};
+use crate::transport::{self, Listener};
 use crate::{Error, grpc};
 
 const DEFAULT_MAX_BODY_SIZE: usize = 1 << 20;
@@ -16,7 +18,8 @@ const DEFAULT_MAX_WAIT: Duration = Duration::from_mins(5);
 /// A bound server that hasn't started handling requests.
 #[derive(Debug)]
 pub struct Server {
-    listener: TcpListener,
+    listeners: Vec<Listener>,
+    tls: Option<Material>,
     settings: ServerBuilder,
 }
 
@@ -27,16 +30,24 @@ impl Server {
         ServerBuilder::default()
     }
 
-    /// Returns the bound address, which reveals the port when binding to port 0.
+    /// Returns the first bound address, which reveals the port when binding to port 0.
     ///
     /// # Panics
     ///
     /// Panics if the operating system can't report the address of a socket it bound.
     #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
-        self.listener
-            .local_addr()
-            .expect("a bound socket has an address")
+        self.listeners[0].local_addr()
+    }
+
+    /// Returns the URL of each listener, with plain HTTP first.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system can't report the address of a socket it bound.
+    #[must_use]
+    pub fn urls(&self) -> Vec<String> {
+        self.listeners.iter().map(Listener::url).collect()
     }
 
     /// Handles requests until `shutdown` completes.
@@ -45,13 +56,11 @@ impl Server {
     ///
     /// # Errors
     ///
-    /// Returns an error if the socket can't be handed to the async runtime.
+    /// Returns an error if a socket can't be handed to the async runtime.
     pub async fn serve<F>(self, shutdown: F) -> Result<(), Error>
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.listener.set_nonblocking(true).map_err(Error::serve)?;
-        let listener = tokio::net::TcpListener::from_std(self.listener).map_err(Error::serve)?;
         let (reporter, grpc_health) = tonic_health::server::health_reporter();
         let settings = self.settings;
         let context = Arc::new(Context {
@@ -67,12 +76,11 @@ impl Server {
         });
         let app = grpc::router(context.clone(), grpc_health)
             .fallback_service(routes::router(context.clone()));
-        let service = app.into_make_service_with_connect_info::<SocketAddr>();
-        axum::serve(listener, service)
-            .with_graceful_shutdown(async move {
-                shutdown.await;
-                context.health.stop_watches().await;
-            })
+        let shutdown = async move {
+            shutdown.await;
+            context.health.stop_watches().await;
+        };
+        transport::run(self.listeners, app, self.tls, shutdown)
             .await
             .map_err(Error::serve)
     }
@@ -88,6 +96,9 @@ pub struct ServerBuilder {
     max_data_size: u64,
     allow_any_ws_origin: bool,
     max_ws_message_size: usize,
+    http: Vec<TcpListener>,
+    https: Vec<TcpListener>,
+    tls: Option<TlsConfig>,
 }
 
 impl Default for ServerBuilder {
@@ -100,6 +111,9 @@ impl Default for ServerBuilder {
             max_data_size: DEFAULT_MAX_DATA_SIZE,
             allow_any_ws_origin: false,
             max_ws_message_size: DEFAULT_MAX_WS_MESSAGE_SIZE,
+            http: Vec::new(),
+            https: Vec::new(),
+            tls: None,
         }
     }
 }
@@ -156,7 +170,28 @@ impl ServerBuilder {
         self
     }
 
-    /// Binds the listening socket without serving yet.
+    /// Sets the certificate and client authentication for HTTPS listeners.
+    #[must_use]
+    pub fn tls(mut self, tls: TlsConfig) -> Self {
+        self.tls = Some(tls);
+        self
+    }
+
+    /// Adds a bound socket that serves plain HTTP.
+    #[must_use]
+    pub fn http_listener(mut self, listener: TcpListener) -> Self {
+        self.http.push(listener);
+        self
+    }
+
+    /// Adds a bound socket that serves HTTPS, which requires [`tls`](Self::tls).
+    #[must_use]
+    pub fn https_listener(mut self, listener: TcpListener) -> Self {
+        self.https.push(listener);
+        self
+    }
+
+    /// Binds a plain HTTP socket without serving yet.
     ///
     /// This is synchronous so a process can bind before starting a runtime, then drop privileges.
     ///
@@ -165,8 +200,37 @@ impl ServerBuilder {
     /// Returns an error if the address can't be bound.
     pub fn bind(self, address: impl ToSocketAddrs) -> Result<Server, Error> {
         let listener = TcpListener::bind(address).map_err(Error::bind)?;
+        self.http_listener(listener).build()
+    }
+
+    /// Validates the configuration and prepares its listeners without serving yet.
+    ///
+    /// Certificates are read here, so that a process can give up the right to read them afterward.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there are no listeners, or HTTPS can't be set up.
+    pub fn build(mut self) -> Result<Server, Error> {
+        let http = std::mem::take(&mut self.http);
+        let https = std::mem::take(&mut self.https);
+        if http.is_empty() && https.is_empty() {
+            return Err(Error::no_listeners());
+        }
+        if !https.is_empty() && self.tls.is_none() {
+            return Err(Error::missing_tls());
+        }
+        let tls = match &self.tls {
+            Some(tls) if !https.is_empty() => Some(Material::load(tls)?),
+            _ => None,
+        };
+        let listeners = http
+            .into_iter()
+            .map(Listener::http)
+            .chain(https.into_iter().map(Listener::https))
+            .collect();
         Ok(Server {
-            listener,
+            listeners,
+            tls,
             settings: self,
         })
     }

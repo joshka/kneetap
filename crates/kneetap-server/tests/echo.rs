@@ -1,8 +1,13 @@
 //! WebSocket echo over a real socket.
 
 use futures_util::{SinkExt, StreamExt};
+use hyper::client::conn::http2;
+use hyper::ext::Protocol;
+use hyper::{Method, Request, StatusCode};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use kneetap_server::{Server, ServerBuilder};
 use rstest::rstest;
+use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::{Error, Message};
@@ -35,6 +40,30 @@ async fn closing_completes_the_handshake() {
     socket.close(None).await.unwrap();
 
     assert_eq!(socket.next().await.unwrap().unwrap(), Message::Close(None));
+}
+
+#[tokio::test]
+async fn http2_clients_can_open_a_websocket() {
+    let url = start(Server::builder());
+    let address = url.trim_start_matches("ws://").trim_end_matches("/echo");
+    let stream = TcpStream::connect(address).await.unwrap();
+    let (mut sender, connection) = http2::handshake(TokioExecutor::new(), TokioIo::new(stream))
+        .await
+        .unwrap();
+    tokio::spawn(connection);
+    let mut request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("http://{address}/echo"))
+        .header("sec-websocket-version", "13")
+        .body(String::new())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(Protocol::from_static("websocket"));
+
+    let response = sender.send_request(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 async fn connect_from(url: &str, origin: &str) -> Result<(), Error> {

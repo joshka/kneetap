@@ -20,6 +20,7 @@
 
 mod client;
 mod error;
+mod tls;
 
 pub use client::{Client, ClientBuilder};
 pub use error::Error;

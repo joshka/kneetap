@@ -362,7 +362,8 @@ mod tests {
           "method": "GET",
           "name": "blue",
           "remoteAddr": "10.0.0.9:4000",
-          "target": "/api"
+          "target": "/api",
+          "tls": null
         }
         "#);
     }
