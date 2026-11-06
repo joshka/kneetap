@@ -109,11 +109,16 @@ fn requested_environment(
         let message = "environment disclosure is disabled\n";
         return Err((StatusCode::FORBIDDEN, message));
     }
+    Ok(Some(environment_lines()))
+}
+
+/// Lists the process environment as `NAME=value` lines, sorted so reports are easy to compare.
+fn environment_lines() -> Vec<String> {
     let mut lines: Vec<_> = std::env::vars_os()
         .map(|(name, value)| format!("{}={}", name.display(), value.display()))
         .collect();
     lines.sort_unstable();
-    Ok(Some(lines))
+    lines
 }
 
 /// Returns the response delay clients request to test how they handle slow backends.
