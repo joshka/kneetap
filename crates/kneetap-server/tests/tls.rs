@@ -9,7 +9,7 @@ use hyper::Uri;
 use hyper_util::rt::TokioIo;
 use kneetap_api::{CertificateSource, ClientVerification, Report};
 use kneetap_client::Client;
-use kneetap_server::{Server, TlsConfig};
+use kneetap_server::{ReloadHandle, Server, TlsConfig};
 use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, ExtendedKeyUsagePurpose, IsCa, KeyPair,
     KeyUsagePurpose, date_time_ymd,
@@ -291,4 +291,121 @@ async fn an_https_listener_requires_a_tls_configuration() {
         error.to_string(),
         "an HTTPS listener needs a TLS configuration"
     );
+}
+
+/// A certificate for loopback, written to files a server can load.
+struct ServerFiles {
+    files: Files,
+    certificate: PathBuf,
+    key: PathBuf,
+}
+
+impl ServerFiles {
+    fn new() -> Self {
+        let files = Files::new();
+        let certificate = files.0.path().join("cert.pem");
+        let key = files.0.path().join("key.pem");
+        let server = Self {
+            files,
+            certificate,
+            key,
+        };
+        server.rotate("first.pem");
+        server
+    }
+
+    /// Replaces the certificate and keeps a copy under `trust_as` for clients to trust.
+    fn rotate(&self, trust_as: &str) -> PathBuf {
+        let key = KeyPair::generate().unwrap();
+        let params = CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+        let certificate = params.self_signed(&key).unwrap();
+        std::fs::write(&self.certificate, certificate.pem()).unwrap();
+        std::fs::write(&self.key, key.serialize_pem()).unwrap();
+        self.files.write(trust_as, &certificate.pem())
+    }
+}
+
+fn start_reloadable(files: &ServerFiles, interval: Duration) -> (String, ReloadHandle) {
+    let server = Server::builder()
+        .https_listener(TcpListener::bind("127.0.0.1:0").unwrap())
+        .tls(TlsConfig::files(&files.certificate, &files.key))
+        .reload_interval(interval)
+        .build()
+        .unwrap();
+    let url = format!("{}/api", server.urls()[0]);
+    let handle = server.reload_handle();
+    tokio::spawn(server.serve(std::future::pending()));
+    (url, handle)
+}
+
+fn trusting(path: &PathBuf) -> Client {
+    Client::builder()
+        .root_certificates_file(path)
+        .build()
+        .unwrap()
+}
+
+/// Polls until `check` holds, because reloads happen in the background.
+async fn eventually(mut check: impl AsyncFnMut() -> bool) {
+    for _ in 0..200 {
+        if check().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the condition never held");
+}
+
+#[tokio::test]
+async fn changed_certificate_files_are_picked_up() {
+    let files = ServerFiles::new();
+    let (url, _handle) = start_reloadable(&files, Duration::from_millis(20));
+
+    // The watcher records the files when serving starts, so wait for that before changing them.
+    insecure_client().report(&url).await.unwrap();
+
+    let rotated = trusting(&files.rotate("second.pem"));
+
+    eventually(async || rotated.report(&url).await.is_ok()).await;
+}
+
+#[tokio::test]
+async fn a_rejected_reload_keeps_the_working_certificate_and_says_so() {
+    let files = ServerFiles::new();
+    let certificate = std::fs::read_to_string(&files.certificate).unwrap();
+    let first = files.files.write("trusted.pem", &certificate);
+    let (url, handle) = start_reloadable(&files, Duration::ZERO);
+    let client = trusting(&first);
+
+    std::fs::write(&files.key, "not a key").unwrap();
+    handle.reload();
+
+    eventually(async || {
+        let report = client.report(&url).await.unwrap();
+        report.server_status.reload_error.is_some()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_good_reload_clears_an_earlier_failure() {
+    let files = ServerFiles::new();
+    let (url, handle) = start_reloadable(&files, Duration::ZERO);
+    std::fs::write(&files.key, "not a key").unwrap();
+    handle.reload();
+    let client = insecure_client();
+    eventually(async || {
+        let report = client.report(&url).await.unwrap();
+        report.server_status.reload_error.is_some()
+    })
+    .await;
+
+    files.rotate("second.pem");
+    handle.reload();
+
+    eventually(async || {
+        let report = client.report(&url).await.unwrap();
+        report.server_status.reload_error.is_none()
+    })
+    .await;
 }

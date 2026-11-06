@@ -50,6 +50,10 @@ Without `--cacert`, a client certificate is optional and reported as `unverified
 nothing vouches for it. With `--cacert`, HTTPS clients must present a certificate it signed, and a
 broken bundle stops the server rather than accepting any client.
 
+Certificate files are checked every 30 seconds (`--tls-reload-interval`), and `SIGHUP` rereads them
+at once. A replacement is validated before it's used. If it's rejected, the server keeps its
+working certificate and reports the failure in `serverStatus.reloadError`.
+
 See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
 
 ## License

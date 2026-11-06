@@ -27,12 +27,15 @@ mod error;
 mod grpc;
 mod health;
 mod host;
+mod reload;
 mod report;
 mod routes;
 mod server;
+mod status;
 mod tls;
 mod transport;
 
 pub use error::Error;
+pub use reload::ReloadHandle;
 pub use server::{Server, ServerBuilder};
 pub use tls::TlsConfig;

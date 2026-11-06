@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use crate::health::Health;
 use crate::host::Host;
+use crate::reload::{self, Certificates, ReloadHandle};
 use crate::routes::{self, Context};
+use crate::status::Status;
 use crate::tls::{Material, TlsConfig};
 use crate::transport::{self, Listener};
 use crate::{Error, grpc};
@@ -14,12 +16,14 @@ const DEFAULT_MAX_BODY_SIZE: usize = 1 << 20;
 const DEFAULT_MAX_DATA_SIZE: u64 = 10_000_000_000;
 const DEFAULT_MAX_WS_MESSAGE_SIZE: usize = 1 << 20;
 const DEFAULT_MAX_WAIT: Duration = Duration::from_mins(5);
+const DEFAULT_RELOAD_INTERVAL: Duration = Duration::from_secs(30);
 
 /// A bound server that hasn't started handling requests.
 #[derive(Debug)]
 pub struct Server {
     listeners: Vec<Listener>,
     tls: Option<Material>,
+    reload: ReloadHandle,
     settings: ServerBuilder,
 }
 
@@ -50,6 +54,12 @@ impl Server {
         self.listeners.iter().map(Listener::url).collect()
     }
 
+    /// Returns a handle that asks the server to reread its certificates.
+    #[must_use]
+    pub fn reload_handle(&self) -> ReloadHandle {
+        self.reload.clone()
+    }
+
     /// Handles requests until `shutdown` completes.
     ///
     /// Shutdown stops accepting connections and waits for requests in progress to finish.
@@ -63,6 +73,10 @@ impl Server {
     {
         let (reporter, grpc_health) = tonic_health::server::health_reporter();
         let settings = self.settings;
+        let status = Status::default();
+        let tls = self.tls.zip(settings.tls);
+        let certificates = tls.map(|(tls, config)| Certificates::new(tls, config, status.clone()));
+        let certificates = certificates.map(Arc::new);
         let context = Arc::new(Context {
             name: settings.name,
             host: Host::detect(),
@@ -73,6 +87,7 @@ impl Server {
             health: Health::new(reporter).await,
             allow_any_ws_origin: settings.allow_any_ws_origin,
             max_ws_message_size: settings.max_ws_message_size,
+            status,
         });
         let app = grpc::router(context.clone(), grpc_health)
             .fallback_service(routes::router(context.clone()));
@@ -80,7 +95,11 @@ impl Server {
             shutdown.await;
             context.health.stop_watches().await;
         };
-        transport::run(self.listeners, app, self.tls, shutdown)
+        let interval = settings.reload_interval;
+        let _reloads = certificates
+            .clone()
+            .map(|tls| reload::spawn(tls, self.reload, interval));
+        transport::run(self.listeners, app, certificates, shutdown)
             .await
             .map_err(Error::serve)
     }
@@ -99,6 +118,7 @@ pub struct ServerBuilder {
     http: Vec<TcpListener>,
     https: Vec<TcpListener>,
     tls: Option<TlsConfig>,
+    reload_interval: Duration,
 }
 
 impl Default for ServerBuilder {
@@ -114,6 +134,7 @@ impl Default for ServerBuilder {
             http: Vec::new(),
             https: Vec::new(),
             tls: None,
+            reload_interval: DEFAULT_RELOAD_INTERVAL,
         }
     }
 }
@@ -177,6 +198,14 @@ impl ServerBuilder {
         self
     }
 
+    /// Sets how often certificate files are checked for changes. The default is 30 seconds, and
+    /// zero turns checking off.
+    #[must_use]
+    pub const fn reload_interval(mut self, interval: Duration) -> Self {
+        self.reload_interval = interval;
+        self
+    }
+
     /// Adds a bound socket that serves plain HTTP.
     #[must_use]
     pub fn http_listener(mut self, listener: TcpListener) -> Self {
@@ -231,6 +260,7 @@ impl ServerBuilder {
         Ok(Server {
             listeners,
             tls,
+            reload: ReloadHandle::default(),
             settings: self,
         })
     }
