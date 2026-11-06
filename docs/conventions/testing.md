@@ -6,3 +6,5 @@
 - Keep a test linear: set up, act once, compare whole values. It should read as documentation.
 - Name a test for the behavior it proves, not the function it calls.
 - Assert on values rather than booleans, so a failure shows what happened.
+- Snapshot reports and other structured output with `insta`, redacting anything host-specific.
+- Run tests with `just test`, which also runs doctests.

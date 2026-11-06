@@ -1,0 +1,109 @@
+use std::future::Future;
+use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
+use std::sync::Arc;
+
+use crate::Error;
+use crate::host::Host;
+use crate::routes::{self, Context};
+
+const DEFAULT_MAX_BODY_SIZE: usize = 1 << 20;
+
+/// A bound server that hasn't started handling requests.
+#[derive(Debug)]
+pub struct Server {
+    listener: TcpListener,
+    context: Arc<Context>,
+}
+
+impl Server {
+    /// Starts configuring a server.
+    #[must_use]
+    pub fn builder() -> ServerBuilder {
+        ServerBuilder::default()
+    }
+
+    /// Returns the bound address, which reveals the port when binding to port 0.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the operating system can't report the address of a socket it bound.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.listener
+            .local_addr()
+            .expect("a bound socket has an address")
+    }
+
+    /// Handles requests until `shutdown` completes.
+    ///
+    /// Shutdown stops accepting connections and waits for requests in progress to finish.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket can't be handed to the async runtime.
+    pub async fn serve<F>(self, shutdown: F) -> Result<(), Error>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.listener.set_nonblocking(true).map_err(Error::serve)?;
+        let listener = tokio::net::TcpListener::from_std(self.listener).map_err(Error::serve)?;
+        let service =
+            routes::router(self.context).into_make_service_with_connect_info::<SocketAddr>();
+        axum::serve(listener, service)
+            .with_graceful_shutdown(shutdown)
+            .await
+            .map_err(Error::serve)
+    }
+}
+
+/// Configures a [`Server`].
+#[derive(Debug)]
+pub struct ServerBuilder {
+    name: Option<String>,
+    max_body_size: usize,
+}
+
+impl Default for ServerBuilder {
+    fn default() -> Self {
+        Self {
+            name: None,
+            max_body_size: DEFAULT_MAX_BODY_SIZE,
+        }
+    }
+}
+
+impl ServerBuilder {
+    /// Sets the name included in reports, which distinguishes replicas on one host.
+    #[must_use]
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Sets the largest request body a report will read. The default is 1 MiB.
+    #[must_use]
+    pub const fn max_body_size(mut self, bytes: usize) -> Self {
+        self.max_body_size = bytes;
+        self
+    }
+
+    /// Binds the listening socket without serving yet.
+    ///
+    /// This is synchronous so a process can bind before starting a runtime, then drop privileges.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address can't be bound.
+    pub fn bind(self, address: impl ToSocketAddrs) -> Result<Server, Error> {
+        let listener = TcpListener::bind(address).map_err(Error::bind)?;
+        let context = Context {
+            name: self.name,
+            host: Host::detect(),
+            max_body_size: self.max_body_size,
+        };
+        Ok(Server {
+            listener,
+            context: Arc::new(context),
+        })
+    }
+}

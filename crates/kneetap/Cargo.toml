@@ -13,4 +13,7 @@ categories = ["command-line-utilities", "development-tools::debugging"]
 workspace = true
 
 [dependencies]
-clap = { workspace = true, features = ["derive", "help", "std", "usage"] }
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive", "error-context", "help", "std", "usage"] }
+kneetap-server.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }

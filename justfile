@@ -13,8 +13,10 @@ fmt-check:
 clippy:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+# nextest doesn't run doctests.
 test:
-    cargo nextest run --workspace --all-features --locked --no-tests=pass
+    cargo nextest run --workspace --all-features --locked
+    cargo test --workspace --all-features --locked --doc
 
 docs:
     RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --document-private-items --locked
