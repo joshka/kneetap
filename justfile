@@ -30,5 +30,10 @@ typos:
 lint-md:
     rumdl check .
 
-# Run every check that CI runs.
+# Build the image and check it the way a deployment would use it. Requires Docker.
+image-smoke:
+    docker build -t kneetap:local .
+    scripts/container-smoke.sh kneetap:local
+
+# Run every check that CI runs, except the image.
 ci: fmt-check clippy test docs deny typos lint-md

@@ -88,6 +88,24 @@ Reports list what it worked around under `serverStatus.degradations`.
 `serve` option except `--puid` and `--pgid` can also be set with a `KNEETAP_` variable, such as
 `KNEETAP_PORT`. Flags accept values such as `true`, `false`, `1`, and `0`.
 
+## Container
+
+The image is built from `scratch`, so it's only the binary and works with a read-only filesystem.
+Its `HEALTHCHECK` uses `kneetap healthcheck`, which follows the server's settings.
+
+```sh
+docker build -t kneetap .
+docker run --read-only -p 8080:80 -p 8443:443 kneetap --name blue
+```
+
+A server started with `--no-http --cacert` only answers clients with a certificate, so its health
+check needs one too. Override it in exec form, because the image has no shell. In Compose:
+
+```yaml
+healthcheck:
+  test: ["CMD", "/kneetap", "healthcheck", "--cert", "/certs/client.pem", "--key", "/certs/client.key"]
+```
+
 ## Privileges
 
 Started as root, kneetap binds its ports, reads its certificates, then switches to UID and GID
