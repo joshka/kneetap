@@ -1,11 +1,13 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use axum::extract::{FromRequestParts, WebSocketUpgrade};
 use axum::http::request::Parts;
 use axum::http::uri::Authority;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::limits::Activity;
@@ -21,12 +23,16 @@ pub async fn upgrade(context: &Context, parts: &mut Parts) -> Result<Response, R
     let limit = context.max_ws_message_size;
     // An HTTP/2 WebSocket shares its connection, which must not count as idle while this is open.
     let guard = parts.extensions.get::<Arc<Activity>>().map(Activity::begin);
+    // Taken before the upgrade completes, so that shutdown also waits for a pending upgrade.
+    let tracked = context.websockets.token();
+    let stop = context.stop.clone();
+    let close_timeout = context.shutdown_timeout;
     Ok(upgrade
         .max_message_size(limit)
         .max_frame_size(limit)
-        .on_upgrade(|socket| async move {
-            let _guard = guard;
-            echo(socket).await;
+        .on_upgrade(move |socket| async move {
+            let _held = (guard, tracked);
+            echo(socket, stop, close_timeout).await;
         })
         .into_response())
 }
@@ -72,19 +78,39 @@ fn same_origin(origin: &str, authority: &str) -> Option<bool> {
     Some(same_port && origin.host_str()?.eq_ignore_ascii_case(authority.host()))
 }
 
-/// Echoes text and binary messages until either side closes.
-async fn echo(mut socket: WebSocket) {
-    while let Some(Ok(message)) = socket.recv().await {
-        match message {
-            Message::Text(_) | Message::Binary(_) => {
+/// Echoes text and binary messages until either side closes, or the server shuts down.
+async fn echo(mut socket: WebSocket, stop: CancellationToken, close_timeout: Duration) {
+    loop {
+        let received = tokio::select! {
+            received = socket.recv() => received,
+            () = stop.cancelled() => return go_away(socket, close_timeout).await,
+        };
+        match received {
+            Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
                 if socket.send(message).await.is_err() {
-                    break;
+                    return;
                 }
             }
             // The next `recv` flushes the queued close reply, then ends the stream.
-            Message::Close(_) | Message::Ping(_) | Message::Pong(_) => {}
+            Some(Ok(Message::Close(_) | Message::Ping(_) | Message::Pong(_))) => {}
+            Some(Err(_)) | None => return,
         }
     }
+}
+
+/// Tells the client the server is shutting down, then waits up to `timeout` for its close reply.
+///
+/// A client that can't be told is already gone.
+async fn go_away(mut socket: WebSocket, timeout: Duration) {
+    let close = CloseFrame {
+        code: close_code::AWAY,
+        reason: "server shutting down".into(),
+    };
+    if socket.send(Message::Close(Some(close))).await.is_err() {
+        return;
+    }
+    let replied = async { while let Some(Ok(_)) = socket.recv().await {} };
+    let _ = tokio::time::timeout(timeout, replied).await;
 }
 
 #[cfg(test)]

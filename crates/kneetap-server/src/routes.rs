@@ -10,6 +10,8 @@ use axum::http::{HeaderValue, Method, StatusCode, Version, header};
 use axum::response::Response;
 use itertools::Itertools;
 use serde::Deserialize;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 use crate::health::{self, Health};
 use crate::host::Host;
@@ -30,6 +32,9 @@ pub struct Context {
     pub max_ws_message_size: usize,
     pub status: Status,
     pub body_timeout: Duration,
+    pub shutdown_timeout: Duration,
+    pub websockets: TaskTracker,
+    pub stop: CancellationToken,
 }
 
 /// The parameters `/` and `/api` own. Any others belong to the client and are only reported.
@@ -305,6 +310,9 @@ mod tests {
             max_ws_message_size: 1024,
             status: Status::default(),
             body_timeout: Duration::from_secs(5),
+            shutdown_timeout: Duration::from_secs(5),
+            websockets: TaskTracker::new(),
+            stop: CancellationToken::new(),
         }
     }
 

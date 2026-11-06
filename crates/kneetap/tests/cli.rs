@@ -153,3 +153,37 @@ fn running_out_of_descriptors_does_not_stop_the_server() {
     ]);
     assert!(health.status.success(), "{health:?}");
 }
+
+/// Sends a signal to the server while a slow request runs, returning the response and exit status.
+#[cfg(unix)]
+fn stop_during_a_request(signal: &str) -> (String, std::process::ExitStatus) {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let mut server = Serve::start("127.0.0.1", &[]);
+    let mut stream = TcpStream::connect(&server.address).unwrap();
+    stream
+        .write_all(b"GET /?wait=500ms HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+
+    let pid = server.child.id().to_string();
+    let sent = Command::new("/bin/kill").args([signal, &pid]).status();
+    assert!(sent.unwrap().success());
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    (response, server.child.wait().unwrap())
+}
+
+#[cfg(unix)]
+#[rstest::rstest]
+#[case("-TERM")]
+#[case("-INT")]
+fn a_signal_lets_the_request_in_progress_finish(#[case] signal: &str) {
+    let (response, status) = stop_during_a_request(signal);
+
+    assert_eq!(response.lines().next(), Some("HTTP/1.1 200 OK"));
+    assert!(status.success(), "{status}");
+}

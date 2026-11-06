@@ -103,6 +103,10 @@ struct Serve {
     /// Time a connection may stay open with no requests
     #[arg(long, default_value = "60s", value_parser = positive_duration)]
     idle_timeout: Duration,
+
+    /// Time allowed for work in progress to finish after a shutdown signal
+    #[arg(long, default_value = "10s", value_parser = humantime::parse_duration)]
+    shutdown_timeout: Duration,
 }
 
 /// Parses a duration, refusing zero because it would close every connection at once.
@@ -260,7 +264,8 @@ fn run_server(serve: &Serve) -> Result<()> {
         .header_timeout(serve.header_timeout)
         .body_timeout(serve.body_timeout)
         .write_idle_timeout(serve.write_idle_timeout)
-        .idle_timeout(serve.idle_timeout);
+        .idle_timeout(serve.idle_timeout)
+        .shutdown_timeout(serve.shutdown_timeout);
     if serve.enable_env {
         builder = builder.enable_env();
     }
@@ -290,12 +295,7 @@ fn run_server(serve: &Serve) -> Result<()> {
     if server.urls().iter().any(|url| url.starts_with("https:")) {
         runtime.spawn(forward_hangups(server.reload_handle()));
     }
-    runtime.block_on(server.serve(async {
-        // If signals are unavailable, the server keeps running until it's killed.
-        if tokio::signal::ctrl_c().await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    }))?;
+    runtime.block_on(server.serve(shutdown_signal()))?;
     Ok(())
 }
 
@@ -311,6 +311,33 @@ fn printable(text: &str) -> String {
         }
     }
     output
+}
+
+/// Completes when the process is asked to stop, by an interrupt or a container runtime's `SIGTERM`.
+///
+/// A signal that can't be installed is ignored, and with neither the server runs until it's killed.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let Ok(mut terminate) = signal(SignalKind::terminate()) else {
+            return interrupted().await;
+        };
+        tokio::select! {
+            () = interrupted() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    interrupted().await;
+}
+
+/// Completes on an interrupt, or never if the interrupt handler can't be installed.
+async fn interrupted() {
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 /// Treats `SIGHUP` as a request to reread certificates, as daemons conventionally do.
