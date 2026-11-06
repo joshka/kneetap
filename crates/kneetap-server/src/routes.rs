@@ -174,7 +174,6 @@ fn report_response(
         .get_all(header::ACCEPT)
         .iter()
         .filter_map(|value| value.to_str().ok())
-        .collect::<Vec<_>>()
         .join(",");
     let mut response = if is_api || prefers_json(&accept) {
         let json = serde_json::to_vec(&report).expect("a report only holds strings");
@@ -421,6 +420,13 @@ mod tests {
 
         let json: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
         assert_eq!(json["environment"], serde_json::json!(environment_lines()));
+    }
+
+    #[test]
+    fn environment_lines_are_sorted() {
+        let lines = environment_lines();
+
+        assert_eq!(lines, lines.iter().cloned().sorted_unstable().collect_vec());
     }
 
     #[tokio::test(start_paused = true)]
