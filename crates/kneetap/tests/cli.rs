@@ -118,3 +118,38 @@ fn report_refuses_an_untrusted_certificate_by_default() {
 
     assert_eq!(report.status.code(), Some(1));
 }
+
+#[cfg(unix)]
+#[test]
+fn running_out_of_descriptors_does_not_stop_the_server() {
+    use std::net::TcpStream;
+
+    let script = "ulimit -n 40; exec \"$0\" serve --bind 127.0.0.1 --port 0";
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", script, BINARY])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let address = line.trim().rsplit('/').next().unwrap().to_owned();
+    let mut server = Serve { child, address };
+
+    let held: Vec<_> = (0..60)
+        .filter_map(|_| TcpStream::connect(&server.address).ok())
+        .collect();
+    drop(held);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    assert_eq!(server.child.try_wait().unwrap(), None, "the server exited");
+    let health = kneetap(&[
+        "healthcheck",
+        "--port",
+        server.port(),
+        "--bind",
+        "127.0.0.1",
+    ]);
+    assert!(health.status.success(), "{health:?}");
+}

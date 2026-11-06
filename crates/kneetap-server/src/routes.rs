@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::body::{self, Body, Bytes, HttpBody};
+use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::{ConnectInfo, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, Method, StatusCode, Version, header};
@@ -14,7 +14,7 @@ use serde::Deserialize;
 use crate::health::{self, Health};
 use crate::host::Host;
 use crate::status::Status;
-use crate::{data, echo, report};
+use crate::{body, data, echo, report};
 
 /// Settings and host identity that every request reads.
 #[derive(Debug)]
@@ -29,6 +29,7 @@ pub struct Context {
     pub allow_any_ws_origin: bool,
     pub max_ws_message_size: usize,
     pub status: Status,
+    pub body_timeout: Duration,
 }
 
 /// The parameters `/` and `/api` own. Any others belong to the client and are only reported.
@@ -88,7 +89,7 @@ async fn dispatch(context: &Context, request: Request) -> Result<Response, Rejec
     }
     match path {
         "/bench" => Ok(text(StatusCode::OK, "1")),
-        "/health" => health::respond(&context.health, &parts, body).await,
+        "/health" => health::respond(&context.health, &parts, body, context.body_timeout).await,
         "/data" => data::respond(&parts, context.max_data_size),
         "/" | "/api" => report_with_options(context, &parts, body).await,
         // Other paths belong to whatever application is being tested, so their query parameters
@@ -178,8 +179,7 @@ fn disallowed(path: &str, method: &Method) -> Option<&'static str> {
 
 /// Collects the body up to the configured limit, reporting any read failure as too large.
 async fn read_body(context: &Context, body: Body) -> Result<Bytes, Rejection> {
-    let bytes = body::to_bytes(body, context.max_body_size).await;
-    bytes.map_err(|_| (StatusCode::PAYLOAD_TOO_LARGE, "body exceeds maximum\n"))
+    body::read(body, context.max_body_size, context.body_timeout).await
 }
 
 /// Reports the request as text or JSON. Reports are never cached, because each one describes a
@@ -304,6 +304,7 @@ mod tests {
             allow_any_ws_origin: false,
             max_ws_message_size: 1024,
             status: Status::default(),
+            body_timeout: Duration::from_secs(5),
         }
     }
 
@@ -326,7 +327,7 @@ mod tests {
     }
 
     async fn body_text(response: Response) -> String {
-        let bytes = body::to_bytes(response.into_body(), usize::MAX)
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()

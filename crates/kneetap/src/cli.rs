@@ -75,6 +75,43 @@ struct Serve {
     #[arg(long, requires = "tls_port", default_value = "30s")]
     #[arg(value_parser = humantime::parse_duration)]
     tls_reload_interval: Duration,
+
+    /// Most connections open at once, across all listeners
+    #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    max_connections: u32,
+
+    /// Most requests handled at once, across all connections
+    #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    max_inflight_requests: u32,
+
+    /// Time allowed for a TLS handshake
+    #[arg(long, default_value = "10s", value_parser = positive_duration)]
+    handshake_timeout: Duration,
+
+    /// Time allowed for a connection to send its first bytes and complete its headers
+    #[arg(long, default_value = "10s", value_parser = positive_duration)]
+    header_timeout: Duration,
+
+    /// Time allowed to read a request body, or between messages on a gRPC stream
+    #[arg(long, default_value = "30s", value_parser = positive_duration)]
+    body_timeout: Duration,
+
+    /// Time a blocked write may wait for the client to read
+    #[arg(long, default_value = "30s", value_parser = positive_duration)]
+    write_idle_timeout: Duration,
+
+    /// Time a connection may stay open with no requests
+    #[arg(long, default_value = "60s", value_parser = positive_duration)]
+    idle_timeout: Duration,
+}
+
+/// Parses a duration, refusing zero because it would close every connection at once.
+fn positive_duration(value: &str) -> Result<Duration, String> {
+    match humantime::parse_duration(value) {
+        Ok(duration) if !duration.is_zero() => Ok(duration),
+        Ok(_) => Err("must be greater than zero".to_owned()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// How a client command connects to a server.
@@ -215,7 +252,15 @@ async fn run_report(args: ReportArgs) -> Result<()> {
 
 /// Binds before starting the runtime, so a failure to bind is reported without starting threads.
 fn run_server(serve: &Serve) -> Result<()> {
-    let mut builder = Server::builder().reload_interval(serve.tls_reload_interval);
+    let mut builder = Server::builder()
+        .reload_interval(serve.tls_reload_interval)
+        .max_connections(serve.max_connections as usize)
+        .max_inflight_requests(serve.max_inflight_requests as usize)
+        .handshake_timeout(serve.handshake_timeout)
+        .header_timeout(serve.header_timeout)
+        .body_timeout(serve.body_timeout)
+        .write_idle_timeout(serve.write_idle_timeout)
+        .idle_timeout(serve.idle_timeout);
     if serve.enable_env {
         builder = builder.enable_env();
     }

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::health::Health;
 use crate::host::Host;
+use crate::limits::Limits;
 use crate::reload::{self, Certificates, ReloadHandle};
 use crate::routes::{self, Context};
 use crate::status::Status;
@@ -88,6 +89,7 @@ impl Server {
             allow_any_ws_origin: settings.allow_any_ws_origin,
             max_ws_message_size: settings.max_ws_message_size,
             status,
+            body_timeout: settings.limits.body_timeout,
         });
         let app = grpc::router(context.clone(), grpc_health)
             .fallback_service(routes::router(context.clone()));
@@ -99,7 +101,7 @@ impl Server {
         let _reloads = certificates
             .clone()
             .map(|tls| reload::spawn(tls, self.reload, interval));
-        transport::run(self.listeners, app, certificates, shutdown)
+        transport::run(self.listeners, app, certificates, settings.limits, shutdown)
             .await
             .map_err(Error::serve)
     }
@@ -119,6 +121,7 @@ pub struct ServerBuilder {
     https: Vec<TcpListener>,
     tls: Option<TlsConfig>,
     reload_interval: Duration,
+    limits: Limits,
 }
 
 impl Default for ServerBuilder {
@@ -135,6 +138,7 @@ impl Default for ServerBuilder {
             https: Vec::new(),
             tls: None,
             reload_interval: DEFAULT_RELOAD_INTERVAL,
+            limits: Limits::default(),
         }
     }
 }
@@ -203,6 +207,60 @@ impl ServerBuilder {
     #[must_use]
     pub const fn reload_interval(mut self, interval: Duration) -> Self {
         self.reload_interval = interval;
+        self
+    }
+
+    /// Sets how many connections can be open at once, across all listeners. The default is 1024.
+    ///
+    /// Further connections are closed as soon as they're accepted.
+    #[must_use]
+    pub const fn max_connections(mut self, connections: usize) -> Self {
+        self.limits.max_connections = connections;
+        self
+    }
+
+    /// Sets how many requests can run at once. The default is 1024.
+    ///
+    /// Further requests get a 503 until a response finishes or its client disconnects.
+    #[must_use]
+    pub const fn max_inflight_requests(mut self, requests: usize) -> Self {
+        self.limits.max_inflight_requests = requests;
+        self
+    }
+
+    /// Sets the time allowed for a TLS handshake. The default is 10 seconds.
+    #[must_use]
+    pub const fn handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.limits.handshake_timeout = timeout;
+        self
+    }
+
+    /// Sets the time a connection has to send its first bytes and complete its request headers.
+    /// The default is 10 seconds.
+    #[must_use]
+    pub const fn header_timeout(mut self, timeout: Duration) -> Self {
+        self.limits.header_timeout = timeout;
+        self
+    }
+
+    /// Sets the time allowed to read a request body. The default is 30 seconds.
+    #[must_use]
+    pub const fn body_timeout(mut self, timeout: Duration) -> Self {
+        self.limits.body_timeout = timeout;
+        self
+    }
+
+    /// Sets how long a write may wait for a client to read. The default is 30 seconds.
+    #[must_use]
+    pub const fn write_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.limits.write_idle_timeout = timeout;
+        self
+    }
+
+    /// Sets how long a connection may stay open with no requests. The default is 60 seconds.
+    #[must_use]
+    pub const fn idle_timeout(mut self, timeout: Duration) -> Self {
+        self.limits.idle_timeout = timeout;
         self
     }
 
