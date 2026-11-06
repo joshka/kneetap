@@ -1,0 +1,23 @@
+[package]
+name = "kneetap-client"
+description = "Client for querying kneetap servers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["http", "debugging", "client"]
+
+[lints]
+workspace = true
+
+[dependencies]
+kneetap-api.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+axum = { workspace = true, features = ["http1", "tokio"] }
+kneetap-server.workspace = true
+rstest.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt"] }
