@@ -16,6 +16,7 @@ pub fn build(
     name: Option<String>,
     host: &Host,
     peer: SocketAddr,
+    environment: Option<Vec<String>>,
     parts: &Parts,
     body: &[u8],
 ) -> Report {
@@ -35,6 +36,7 @@ pub fn build(
         hostname: host.name.clone(),
         addresses: host.addresses.clone(),
         remote_addr: peer.to_string(),
+        environment,
         method: parts.method.to_string(),
         target: parts
             .uri
@@ -74,7 +76,7 @@ mod tests {
 
     fn report(request: Request<()>, body: &[u8]) -> Report {
         let peer = "10.0.0.9:4000".parse().unwrap();
-        build(None, &Host::default(), peer, &parts(request), body)
+        build(None, &Host::default(), peer, None, &parts(request), body)
     }
 
     #[rstest]

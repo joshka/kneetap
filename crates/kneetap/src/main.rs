@@ -33,6 +33,10 @@ struct Serve {
     /// Name included in reports
     #[arg(long)]
     name: Option<String>,
+
+    /// Allow `?env=true` to return the server's environment variables
+    #[arg(long)]
+    enable_env: bool,
 }
 
 fn main() -> Result<()> {
@@ -44,6 +48,9 @@ fn main() -> Result<()> {
 /// Binds before starting the runtime, so a failure to bind is reported without starting threads.
 fn run_server(serve: &Serve) -> Result<()> {
     let mut builder = Server::builder();
+    if serve.enable_env {
+        builder = builder.enable_env();
+    }
     if let Some(name) = &serve.name {
         builder = builder.name(name);
     }

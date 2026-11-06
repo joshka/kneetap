@@ -1,12 +1,14 @@
 use std::future::Future;
 use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::Error;
 use crate::host::Host;
 use crate::routes::{self, Context};
 
 const DEFAULT_MAX_BODY_SIZE: usize = 1 << 20;
+const DEFAULT_MAX_WAIT: Duration = Duration::from_mins(5);
 
 /// A bound server that hasn't started handling requests.
 #[derive(Debug)]
@@ -61,6 +63,8 @@ impl Server {
 pub struct ServerBuilder {
     name: Option<String>,
     max_body_size: usize,
+    max_wait: Duration,
+    enable_env: bool,
 }
 
 impl Default for ServerBuilder {
@@ -68,6 +72,8 @@ impl Default for ServerBuilder {
         Self {
             name: None,
             max_body_size: DEFAULT_MAX_BODY_SIZE,
+            max_wait: DEFAULT_MAX_WAIT,
+            enable_env: false,
         }
     }
 }
@@ -87,6 +93,21 @@ impl ServerBuilder {
         self
     }
 
+    /// Sets the longest delay a client can request with `?wait=`. The default is 5 minutes.
+    #[must_use]
+    pub const fn max_wait(mut self, wait: Duration) -> Self {
+        self.max_wait = wait;
+        self
+    }
+
+    /// Allows clients to read the environment with `?env=true`, which is off by default because
+    /// environment variables often hold secrets.
+    #[must_use]
+    pub const fn enable_env(mut self) -> Self {
+        self.enable_env = true;
+        self
+    }
+
     /// Binds the listening socket without serving yet.
     ///
     /// This is synchronous so a process can bind before starting a runtime, then drop privileges.
@@ -100,6 +121,8 @@ impl ServerBuilder {
             name: self.name,
             host: Host::detect(),
             max_body_size: self.max_body_size,
+            max_wait: self.max_wait,
+            enable_env: self.enable_env,
         };
         Ok(Server {
             listener,

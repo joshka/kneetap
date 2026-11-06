@@ -14,6 +14,8 @@ curl localhost:8080/anything
 | --- | --- |
 | `/api` | The report as JSON |
 | `/bench` | `1`, for load testing |
+| `/` or `/api` with `?wait=2s` | The report, after a delay |
+| `/` or `/api` with `?env=true` | The report with environment variables, if `--enable-env` is set |
 | Anything else | The report as text, or JSON if the client prefers it |
 
 See [CONTRIBUTING](CONTRIBUTING.md) to work on it.
