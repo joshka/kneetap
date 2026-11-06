@@ -8,6 +8,11 @@ Read the convention that applies to the task:
 - [Docs](docs/conventions/docs.md): what comments and rustdoc should say.
 - [Testing](docs/conventions/testing.md): where tests go and how they read.
 - [Commits](docs/conventions/commits.md): how changes are shaped and described.
+- [API](docs/conventions/api.md): crate boundaries, errors, and public types.
+- [Dependencies](docs/conventions/dependencies.md): versions, features, and lints.
+- [Robustness](docs/conventions/robustness.md): untrusted input, signals, and protocol edge cases.
+
+[Architecture](docs/architecture.md) explains how a request flows, and [ADRs](docs/adr) explain why.
 
 ## Merging
 

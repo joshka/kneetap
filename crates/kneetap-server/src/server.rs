@@ -17,6 +17,8 @@ use crate::transport::{self, Listener};
 use crate::{Error, grpc};
 
 const DEFAULT_MAX_BODY_SIZE: usize = 1 << 20;
+
+/// Large enough to test transfers, small enough that one request can't tie up a link for days.
 const DEFAULT_MAX_DATA_SIZE: u64 = 10_000_000_000;
 const DEFAULT_MAX_WS_MESSAGE_SIZE: usize = 1 << 20;
 const DEFAULT_MAX_WAIT: Duration = Duration::from_mins(5);

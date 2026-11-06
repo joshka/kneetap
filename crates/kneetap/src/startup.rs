@@ -4,6 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
 use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, Socket, Type};
 
+/// Deep enough to absorb the bursts a load test sends.
 const LISTEN_BACKLOG: i32 = 1024;
 
 pub const DEFAULT_HTTP_PORT: u16 = 80;

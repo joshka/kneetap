@@ -256,7 +256,10 @@ enum ByteRange {
     Unsatisfiable,
 }
 
-/// Reads a single `bytes` range against data of `size` bytes.
+/// Parses a `Range` header for a body of `size` bytes.
+///
+/// RFC 9110 section 14.2 lets a server ignore a range it doesn't support, so anything other than a
+/// single byte range serves the whole body rather than failing.
 fn parse_range(value: &str, size: u64) -> ByteRange {
     let Some((start, end)) = single_range(value) else {
         return ByteRange::Ignored;
