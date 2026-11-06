@@ -30,6 +30,7 @@ kneetap-api = { path = "crates/kneetap-api", version = "0.1.0" }
 kneetap-client = { path = "crates/kneetap-client", version = "0.1.0" }
 kneetap-server = { path = "crates/kneetap-server", version = "0.1.0" }
 mime = "0.3"
+privdrop = "0.5"
 proptest = { version = "1", default-features = false }
 prost = "0.14"
 protox = "0.10"

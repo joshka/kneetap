@@ -4,6 +4,7 @@
 //! `kneetap-client` instead.
 
 mod cli;
+mod privileges;
 mod startup;
 mod telemetry;
 

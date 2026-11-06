@@ -10,6 +10,7 @@ use kneetap_client::{Client, ClientBuilder};
 use kneetap_server::ReloadHandle;
 use kneetap_server::{Server, TlsConfig};
 
+use crate::privileges;
 use crate::startup::{
     self, DEFAULT_HTTP_PORT, DEFAULT_TLS_PORT, FALLBACK_HTTP_PORT, FALLBACK_TLS_PORT, PortChoice,
     Strictness,
@@ -133,6 +134,14 @@ struct Serve {
     /// Time allowed for work in progress to finish after a shutdown signal
     #[arg(long, env = "KNEETAP_SHUTDOWN_TIMEOUT", default_value = "10s", value_parser = humantime::parse_duration)]
     shutdown_timeout: Duration,
+
+    /// User ID to run as after binding, when started as root [default: 65532]
+    #[arg(long, env = "PUID")]
+    puid: Option<u32>,
+
+    /// Group ID to run as after binding, when started as root [default: 65532]
+    #[arg(long, env = "PGID")]
+    pgid: Option<u32>,
 }
 
 /// Parses a duration, refusing zero because it would close every connection at once.
@@ -449,6 +458,7 @@ fn run_server(serve: &Serve) -> Result<()> {
     }
     builder = builder.degradations(degradations);
     let server = builder.build()?;
+    privileges::drop_privileges(serve.puid, serve.pgid)?;
     // Stdout is the interface scripts use to find the port, so these aren't log events.
     for url in server.urls() {
         println!("listening on {url}");

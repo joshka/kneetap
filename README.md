@@ -85,8 +85,15 @@ Reports list what it worked around under `serverStatus.degradations`.
 | The `--cacert` bundle is unusable | HTTPS stays off, and it never accepts any client instead |
 
 `--strict` exits on any of these. By default kneetap listens on all IPv6 and IPv4 addresses. Every
-`serve` option can also be set with a `KNEETAP_` variable, such as `KNEETAP_PORT`. Flags accept
-values such as `true`, `false`, `1`, and `0`.
+`serve` option except `--puid` and `--pgid` can also be set with a `KNEETAP_` variable, such as
+`KNEETAP_PORT`. Flags accept values such as `true`, `false`, `1`, and `0`.
+
+## Privileges
+
+Started as root, kneetap binds its ports, reads its certificates, then switches to UID and GID
+65532, or to `--puid` and `--pgid` (`PUID` and `PGID`) if set. It verifies the change and exits if
+it didn't work. Files it reloads later must be readable by that user. `PUID=0` stays root and logs
+a warning.
 
 ## Logs
 
