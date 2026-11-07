@@ -21,7 +21,7 @@ use crate::telemetry::{self, LogFormat, Verbosity};
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Cli {
-    /// Log debug messages; `RUST_LOG` takes priority
+    /// Log debug messages; `KNEETAP_LOG` takes priority
     #[arg(long, global = true)]
     verbose: bool,
 
@@ -514,6 +514,7 @@ fn run_server(serve: &Serve) -> Result<()> {
     builder = builder.degradations(degradations);
     let server = builder.build()?;
     privileges::drop_privileges(serve.puid, serve.pgid)?;
+    let _logs = telemetry::write_in_background();
     // Stdout is the interface scripts use to find the port, so these aren't log events.
     for url in server.urls() {
         println!("listening on {url}");
