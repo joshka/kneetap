@@ -7,6 +7,7 @@ use axum::http::request::Parts;
 use axum::http::uri::Authority;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -23,6 +24,8 @@ pub async fn upgrade(context: &Context, parts: &mut Parts) -> Result<Response, R
     let limit = context.max_ws_message_size;
     // An HTTP/2 WebSocket shares its connection, which must not count as idle while this is open.
     let guard = parts.extensions.get::<Arc<Activity>>().map(Activity::begin);
+    // Counts the socket against the request limit for as long as it stays open.
+    let permit = parts.extensions.get::<Arc<OwnedSemaphorePermit>>().cloned();
     // Taken before the upgrade completes, so that shutdown also waits for a pending upgrade.
     let tracked = context.websockets.token();
     let stop = context.stop.clone();
@@ -35,7 +38,7 @@ pub async fn upgrade(context: &Context, parts: &mut Parts) -> Result<Response, R
         .max_message_size(limit)
         .max_frame_size(limit)
         .on_upgrade(move |socket| async move {
-            let _held = (guard, tracked);
+            let _held = (permit, guard, tracked);
             echo(socket, stop, timeouts).await;
         })
         .into_response())

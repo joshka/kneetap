@@ -337,6 +337,10 @@ async fn admit(
     let version = request.version();
     // An upgrade outlives its response, so it has to mark itself as a request in progress.
     request.extensions_mut().insert(activity.clone());
+    // It also has to hold the request's capacity, or HTTP/2 WebSockets could pile up without
+    // limit after their responses finish.
+    let permit = Arc::new(permit);
+    request.extensions_mut().insert(permit.clone());
     let response = app.oneshot(request).await?;
     // Waiting starts here, because a slow handler isn't the client's doing. HTTP/1 has no flow
     // control of its own, so the socket's write deadline covers it.
