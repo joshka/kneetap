@@ -1,14 +1,17 @@
-name: Release PR
+name: Release-plz
 
-# Prepares a release PR with the next version and changelog. It only runs when asked.
+# Asking for a run prepares a release PR with the next version and changelog. Merging that PR
+# publishes the crates and tags the release, then starts the release workflow on the tag.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions: {}
 
 jobs:
   release-pr:
-    if: ${{ github.repository_owner == 'joshka' }}
+    if: ${{ github.repository_owner == 'joshka' && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -26,3 +29,37 @@ jobs:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+  # Publishes through crates.io trusted publishing, so no token is stored. It does nothing unless
+  # the push is a merged release PR.
+  release:
+    if: ${{ github.repository_owner == 'joshka' && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      id-token: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        id: release-plz
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      # A tag pushed with the workflow token doesn't start other workflows, but a dispatch does.
+      - name: Start the release workflow on the new tag
+        if: ${{ steps.release-plz.outputs.releases_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          tag=$(jq -r '.[] | select(.package_name == "kneetap") | .tag' <<< "$RELEASES")
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"

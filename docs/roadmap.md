@@ -7,7 +7,6 @@
 
 ## After that
 
-- Publish the crates to crates.io.
 - Report the TLS session over gRPC as well as HTTP.
 
 ## Ideas
