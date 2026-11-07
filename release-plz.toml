@@ -23,6 +23,8 @@ trim = false
 [[package]]
 name = "kneetap"
 version_group = "kneetap"
+# The library crates have no changelog of their own, so their changes go here.
+changelog_include = ["kneetap-api", "kneetap-client", "kneetap-server"]
 
 [[package]]
 name = "kneetap-api"
