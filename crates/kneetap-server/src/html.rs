@@ -337,8 +337,7 @@ fn write_server(page: &mut String, report: &Report) -> fmt::Result {
         write_term(page, "Commit", commit)?;
     }
     let uptime = time::uptime(&report.started_at, &report.received_at)
-        .map(|uptime| format!(", up {uptime}"))
-        .unwrap_or_default();
+        .map_or_default(|uptime| format!(", up {uptime}"));
     write_time(page, "Started", &report.started_at, &uptime)?;
     if !report.addresses.is_empty() {
         write_term(page, "Addresses", &report.addresses.join("\n"))?;
