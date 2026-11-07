@@ -326,7 +326,7 @@ mod tests {
             max_wait: Duration::from_secs(60),
             enable_env: false,
             max_data_size: 1000,
-            health: Health::new(tonic_health::server::health_reporter().0).await,
+            health: Health::new(tonic_health::server::health_reporter().0, None).await,
             allow_any_ws_origin: false,
             max_ws_message_size: 1024,
             status: Status::default(),

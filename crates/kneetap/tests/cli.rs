@@ -2,6 +2,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 
 const BINARY: &str = env!("CARGO_BIN_EXE_kneetap");
@@ -89,6 +90,80 @@ fn healthcheck_fails_when_nothing_answers() {
 
     let output = kneetap(&["healthcheck", "--port", &port]);
 
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
+#[test]
+fn healthcheck_finds_an_https_only_server() {
+    let server = Serve::start("127.0.0.1", &["--tls-port", "0", "--no-http"]);
+
+    let output = kneetap(&["healthcheck", "--no-http", "--tls-port", server.port()]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+#[test]
+fn healthcheck_ignores_a_server_with_another_name() {
+    let server = Serve::start("127.0.0.1", &["--name", "other"]);
+
+    let output = kneetap(&["healthcheck", "--port", server.port(), "--name", "target"]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+}
+
+/// Starts an HTTPS-only server that requires client certificates, keeping its authority's file.
+///
+/// `label` keeps the file apart from those of tests running in the same process.
+fn client_auth_server(label: &str) -> (Serve, PathBuf) {
+    let authority = rcgen::generate_simple_self_signed(["authority".to_owned()]).unwrap();
+    let file = format!("kneetap-ca-{}-{label}.pem", std::process::id());
+    let path = std::env::temp_dir().join(file);
+    std::fs::write(&path, authority.cert.pem()).unwrap();
+    let args = ["--tls-port", "0", "--no-http", "--cacert"];
+    let server = Serve::start(
+        "127.0.0.1",
+        &[&args[..], &[path.to_str().unwrap()]].concat(),
+    );
+    (server, path)
+}
+
+#[rstest::rstest]
+#[case(&["--server-cacert", "/any"], 0)]
+#[case(&[], 1)]
+fn healthcheck_accepts_a_certificate_demand_only_when_told_to_expect_it(
+    #[case] args: &[&str],
+    #[case] code: i32,
+) {
+    let (server, path) = client_auth_server(&format!("demand-{code}"));
+
+    let check = ["healthcheck", "--no-http", "--tls-port", server.port()];
+    let output = kneetap(&[&check[..], args].concat());
+
+    let _ = std::fs::remove_file(path);
+    assert_eq!(output.status.code(), Some(code), "{output:?}");
+}
+
+#[test]
+fn a_certificate_demand_does_not_excuse_an_unhealthy_server() {
+    let (tls, path) = client_auth_server("unhealthy");
+    let http = Serve::start("127.0.0.1", &[]);
+    let mut stream = TcpStream::connect(&http.address).unwrap();
+    let update = "POST /health HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\
+        Content-Type: application/json\r\nContent-Length: 3\r\n\r\n503";
+    stream.write_all(update.as_bytes()).unwrap();
+    stream.read_to_end(&mut Vec::new()).unwrap();
+
+    let output = kneetap(&[
+        "healthcheck",
+        "--port",
+        http.port(),
+        "--tls-port",
+        tls.port(),
+        "--server-cacert",
+        "/any",
+    ]);
+
+    let _ = std::fs::remove_file(path);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
 }
 

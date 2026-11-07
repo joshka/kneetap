@@ -25,3 +25,9 @@ pub const HEALTH_HEADER: &str = "x-kneetap-health";
 
 /// The value of [`HEALTH_HEADER`].
 pub const HEALTH_MARKER: &str = "1";
+
+/// Response header carrying a named server's name on its `/health` endpoint.
+///
+/// A probe searching several ports needs this to tell its server from another kneetap on one of
+/// them.
+pub const HEALTH_NAME_HEADER: &str = "x-kneetap-name";

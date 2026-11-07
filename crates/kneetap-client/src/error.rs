@@ -67,7 +67,7 @@ impl Error {
         }
     }
 
-    /// Returns whether something other than a kneetap server answered.
+    /// Returns whether something other than the intended kneetap server answered.
     #[must_use]
     pub const fn is_unrelated(&self) -> bool {
         matches!(self.kind, ErrorKind::Unrelated(_))
@@ -83,7 +83,7 @@ impl Display for Error {
             ErrorKind::Decode(url) => write!(f, "{url} didn't return a report"),
             ErrorKind::TooLarge(url) => write!(f, "{url} returned too much data for a report"),
             ErrorKind::Unhealthy(url, status) => write!(f, "{url} returned status {status}"),
-            ErrorKind::Unrelated(url) => write!(f, "{url} isn't a kneetap health endpoint"),
+            ErrorKind::Unrelated(url) => write!(f, "{url} isn't the expected kneetap"),
             ErrorKind::NoCandidates => write!(f, "no health endpoint to check"),
         }
     }

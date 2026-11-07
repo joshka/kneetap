@@ -87,6 +87,7 @@ impl Server {
         let tls = self.tls.zip(settings.tls);
         let certificates = tls.map(|(tls, config)| Certificates::new(tls, config, status.clone()));
         let certificates = certificates.map(Arc::new);
+        let health = Health::new(reporter, settings.name.as_deref()).await;
         let context = Arc::new(Context {
             name: settings.name,
             host: Host::detect(),
@@ -94,7 +95,7 @@ impl Server {
             max_wait: settings.max_wait,
             enable_env: settings.enable_env,
             max_data_size: settings.max_data_size,
-            health: Health::new(reporter).await,
+            health,
             allow_any_ws_origin: settings.allow_any_ws_origin,
             max_ws_message_size: settings.max_ws_message_size,
             status,
