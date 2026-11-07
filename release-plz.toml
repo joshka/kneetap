@@ -1,9 +1,10 @@
 # Configuration for https://release-plz.dev. Lives at the root because that's where it's looked up.
 
 [workspace]
-# Versions come from git tags until the crates are published.
-git_only = true
-publish = false
+# Publish only when a release PR merges, not on every push to main.
+release_always = false
+# The release workflow creates the GitHub release once every asset is built.
+git_release_enable = false
 semver_check = false
 git_tag_name = "v{{ version }}"
 pr_name = "Release {{ version }}"

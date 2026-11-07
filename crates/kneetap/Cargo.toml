@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 keywords = ["http", "debugging", "server"]
 categories = ["command-line-utilities", "development-tools::debugging"]
+readme = "../../README.md"
 default-run = "kneetap"
 
 [lints]
