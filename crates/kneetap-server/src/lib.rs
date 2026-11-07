@@ -28,6 +28,7 @@ mod error;
 mod grpc;
 mod health;
 mod host;
+mod html;
 mod identity;
 mod limits;
 mod reload;
