@@ -115,6 +115,76 @@ fn listen(address: SocketAddr) -> io::Result<TcpListener> {
     Ok(socket.into())
 }
 
+/// Reads the addresses of this host's interfaces, or none if the system can't list them.
+pub fn interface_addresses() -> Vec<IpAddr> {
+    if_addrs::get_if_addrs()
+        .inspect_err(|error| tracing::warn!(%error, "server.addresses.unavailable"))
+        .unwrap_or_default()
+        .iter()
+        .map(if_addrs::Interface::ip)
+        .collect()
+}
+
+/// Lists the URLs a browser can open for the listeners at `urls`, since one on all addresses
+/// reports `[::]` or `0.0.0.0`, which isn't a place to connect to.
+///
+/// URLs are grouped by address, nearest first, keeping the listeners' order within each address.
+/// IPv6 link-local addresses are left out because a browser can't open them without a zone.
+pub fn reachable_urls(urls: &[String], interfaces: &[IpAddr]) -> Vec<String> {
+    let mut reachable: Vec<(IpAddr, String)> = urls
+        .iter()
+        .flat_map(|url| addresses_for(url, interfaces))
+        .collect();
+    reachable.sort_by_key(|(address, _)| (nearness(*address), *address));
+    reachable.dedup();
+    reachable.into_iter().map(|(_, url)| url).collect()
+}
+
+/// Lists each address a listener accepts connections on, with its URL.
+fn addresses_for(url: &str, interfaces: &[IpAddr]) -> Vec<(IpAddr, String)> {
+    let Some((scheme, address)) = url.split_once("://") else {
+        return Vec::new();
+    };
+    let Ok(listening) = address.parse::<SocketAddr>() else {
+        return Vec::new();
+    };
+    let accepted: Vec<IpAddr> = interfaces
+        .iter()
+        .copied()
+        .filter(|address| accepts(listening.ip(), *address))
+        .collect();
+    if !listening.ip().is_unspecified() || accepted.is_empty() {
+        return vec![(listening.ip(), url.to_owned())];
+    }
+    accepted
+        .into_iter()
+        .map(|address| {
+            let url = format!("{scheme}://{}", SocketAddr::new(address, listening.port()));
+            (address, url)
+        })
+        .collect()
+}
+
+/// Ranks an address by how close a client using it is likely to be: this host, then the local
+/// network, then anything else over IPv4, then IPv6.
+fn nearness(address: IpAddr) -> u8 {
+    match address {
+        _ if address.is_loopback() => 0,
+        IpAddr::V4(address) if address.is_private() => 1,
+        IpAddr::V4(_) => 2,
+        IpAddr::V6(_) => 3,
+    }
+}
+
+/// Whether a listener on `listening` accepts connections to `address`. An IPv6 listener on all
+/// addresses accepts IPv4 too, because `listen` turns off `IPV6_V6ONLY`.
+fn accepts(listening: IpAddr, address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(_) => true,
+        IpAddr::V6(address) => listening.is_ipv6() && !address.is_unicast_link_local(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +276,80 @@ mod tests {
 
         let error = result.unwrap_err().to_string();
         assert_eq!(error, "couldn't listen on port 0");
+    }
+
+    fn interfaces() -> Vec<IpAddr> {
+        [
+            "fd7a::5",
+            "100.120.0.5",
+            "192.168.1.5",
+            "::1",
+            "fe80::1",
+            "127.0.0.1",
+            "192.168.1.5",
+        ]
+        .map(|ip| ip.parse().unwrap())
+        .to_vec()
+    }
+
+    fn urls(urls: &[&str]) -> Vec<String> {
+        urls.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn listeners_on_all_addresses_are_grouped_by_address_nearest_first() {
+        let listeners = urls(&["http://[::]:80", "https://[::]:443"]);
+
+        let urls = reachable_urls(&listeners, &interfaces());
+
+        assert_eq!(
+            urls,
+            [
+                "http://127.0.0.1:80",
+                "https://127.0.0.1:443",
+                "http://[::1]:80",
+                "https://[::1]:443",
+                "http://192.168.1.5:80",
+                "https://192.168.1.5:443",
+                "http://100.120.0.5:80",
+                "https://100.120.0.5:443",
+                "http://[fd7a::5]:80",
+                "https://[fd7a::5]:443",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_ipv4_listener_lists_only_ipv4_addresses() {
+        let listeners = urls(&["https://0.0.0.0:8443"]);
+
+        let urls = reachable_urls(&listeners, &interfaces());
+
+        assert_eq!(
+            urls,
+            [
+                "https://127.0.0.1:8443",
+                "https://192.168.1.5:8443",
+                "https://100.120.0.5:8443"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_specific_address_is_listed_as_is() {
+        let listeners = urls(&["http://127.0.0.1:8080"]);
+
+        let urls = reachable_urls(&listeners, &interfaces());
+
+        assert_eq!(urls, ["http://127.0.0.1:8080"]);
+    }
+
+    #[test]
+    fn a_listener_is_still_listed_when_interfaces_are_unknown() {
+        let listeners = urls(&["http://[::]:8080"]);
+
+        let urls = reachable_urls(&listeners, &[]);
+
+        assert_eq!(urls, ["http://[::]:8080"]);
     }
 }
