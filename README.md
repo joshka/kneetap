@@ -111,19 +111,11 @@ The image is built from `scratch`, so it's only the binary and works with a read
 Its `HEALTHCHECK` uses `kneetap healthcheck`, which follows the server's settings.
 
 ```sh
-docker build -t kneetap .
-docker run --read-only -p 8080:80 -p 8443:443 kneetap --name blue
+docker run --read-only -e KNEETAP_NAME=blue -p 8080:80 -p 8443:443 ghcr.io/joshka/kneetap
+docker compose up
 ```
 
-A server started with `--no-http --cacert` only answers clients with a certificate. The default
-check then passes as soon as the server asks for a certificate. That shows something is listening,
-but not its name or health status. To see those, give the check a certificate. Override it in exec
-form, because the image has no shell. In Compose:
-
-```yaml
-healthcheck:
-  test: ["CMD", "/kneetap", "healthcheck", "--cert", "/certs/client.pem", "--key", "/certs/client.key"]
-```
+[Docker](docs/docker.md) covers tags, Compose setups, settings, and health checks.
 
 ## Privileges
 
@@ -179,6 +171,7 @@ certificates.
 
 ## Learn more
 
+- [Docker](docs/docker.md)
 - [Architecture](docs/architecture.md)
 - [Decisions](docs/adr)
 - [Roadmap](docs/roadmap.md)

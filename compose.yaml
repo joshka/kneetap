@@ -1,0 +1,12 @@
+# Runs kneetap from the published image. See docs/docker.md for more setups.
+services:
+  kneetap:
+    image: ghcr.io/joshka/kneetap:latest
+    read_only: true
+    ports:
+      - "8080:80"
+      - "8443:443"
+    environment:
+      KNEETAP_NAME: kneetap
+    restart: unless-stopped
+    stop_grace_period: 15s
