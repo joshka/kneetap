@@ -256,8 +256,7 @@ where
         .http2()
         .enable_connect_protocol()
         .timer(TokioTimer::new())
-        .keep_alive_interval(limits.write_idle_timeout)
-        .max_concurrent_streams(u32::try_from(limits.max_inflight_requests).unwrap_or(u32::MAX));
+        .keep_alive_interval(limits.write_idle_timeout);
     let connection =
         builder.serve_connection_with_upgrades(TokioIo::new(io), TowerToHyperService::new(service));
     tokio::pin!(connection);
