@@ -56,7 +56,9 @@ jobs:
           cp LICENSE-APACHE LICENSE-MIT README.md dist/package/
           tar -czf "dist/kneetap-$TARGET.tar.gz" -C dist/package .
           cd dist
-          shasum -a 256 ./*.tar.gz > "SHA256SUMS-$TARGET"
+          # Git Bash on Windows has sha256sum but no shasum, and older macOS has only shasum.
+          if command -v sha256sum >/dev/null; then sum=(sha256sum); else sum=(shasum -a 256); fi
+          "${sum[@]}" ./*.tar.gz > "SHA256SUMS-$TARGET"
       - uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: dist/package
