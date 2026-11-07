@@ -57,6 +57,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Serve reports until interrupted
+    #[command(alias = "server")]
     Serve(Serve),
 
     /// Exit successfully only if a server reports that it's healthy
@@ -834,6 +835,14 @@ mod tests {
         };
 
         assert!(check_tls_files(&serve).is_err());
+    }
+
+    #[test]
+    fn server_is_a_hidden_alias_for_serve() {
+        let cli = Cli::try_parse_from(["kneetap", "server"]).unwrap();
+
+        assert!(matches!(cli.command, Command::Serve(_)));
+        assert!(!Cli::command().render_help().to_string().contains("aliases"));
     }
 
     #[test]
