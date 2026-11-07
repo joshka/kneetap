@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use clap::builder::BoolishValueParser;
+use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Args, Parser, Subcommand};
 use kneetap_client::{Client, ClientBuilder};
 #[cfg(unix)]
@@ -20,9 +21,16 @@ use crate::telemetry::{self, LogFormat, Verbosity};
 /// Reported when HTTPS is up on its fallback port.
 const HTTPS_PORT_MOVED: &str = "https_port_moved";
 
+/// Colors for help and error output, which clap drops for non-terminals unless color is forced.
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Yellow.on_default().bold())
+    .usage(AnsiColor::Yellow.on_default().bold())
+    .literal(AnsiColor::Green.on_default().bold())
+    .placeholder(AnsiColor::Cyan.on_default());
+
 /// Command-line arguments.
 #[derive(Debug, Parser)]
-#[command(version, about)]
+#[command(version, about, styles = STYLES)]
 struct Cli {
     /// Log debug messages; `KNEETAP_LOG` takes priority
     #[arg(long, global = true)]
