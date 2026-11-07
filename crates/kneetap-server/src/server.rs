@@ -200,8 +200,10 @@ impl ServerBuilder {
         self
     }
 
-    /// Lets browsers open `/echo` from any site, which is off by default so that a web page can't
-    /// reach a server only its visitor can see.
+    /// Lets browsers open `/echo` from any site.
+    ///
+    /// By default a page's origin must match the host and port it asked for. The scheme is ignored,
+    /// and DNS rebinding gets past the check, so it isn't access control for a private server.
     #[must_use]
     pub const fn allow_any_ws_origin(mut self) -> Self {
         self.allow_any_ws_origin = true;

@@ -8,8 +8,10 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use kneetap_server::{Server, ServerBuilder};
 use rstest::rstest;
 use tokio::net::TcpStream;
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::error::ProtocolError;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role};
 use tokio_tungstenite::tungstenite::{Error, Message};
 
 fn start(builder: ServerBuilder) -> String {
@@ -43,7 +45,7 @@ async fn closing_completes_the_handshake() {
 }
 
 #[tokio::test]
-async fn http2_clients_can_open_a_websocket() {
+async fn http2_clients_can_exchange_messages_over_a_websocket() {
     let url = start(Server::builder());
     let address = url.trim_start_matches("ws://").trim_end_matches("/echo");
     let stream = TcpStream::connect(address).await.unwrap();
@@ -64,6 +66,11 @@ async fn http2_clients_can_open_a_websocket() {
     let response = sender.send_request(request).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+    let stream = TokioIo::new(hyper::upgrade::on(response).await.unwrap());
+    let mut socket = WebSocketStream::from_raw_socket(stream, Role::Client, None).await;
+    socket.send(Message::text("hello")).await.unwrap();
+    let reply = socket.next().await.unwrap().unwrap();
+    assert_eq!(reply, Message::text("hello"));
 }
 
 async fn connect_from(url: &str, origin: &str) -> Result<(), Error> {
@@ -101,15 +108,16 @@ async fn the_operator_can_allow_any_origin() {
 }
 
 #[tokio::test]
-async fn oversized_messages_end_the_connection() {
+async fn oversized_messages_close_with_a_reason() {
     let url = start(Server::builder().max_ws_message_size(4));
     let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
 
     socket.send(Message::text("12345")).await.unwrap();
 
-    let reply = socket.next().await;
-    let Some(Err(Error::Protocol(error))) = reply else {
-        panic!("expected the connection to drop, got {reply:?}");
+    let close = CloseFrame {
+        code: CloseCode::Size,
+        reason: "message too big".into(),
     };
-    assert_eq!(error, ProtocolError::ResetWithoutClosingHandshake);
+    let reply = socket.next().await.unwrap().unwrap();
+    assert_eq!(reply, Message::Close(Some(close)));
 }
