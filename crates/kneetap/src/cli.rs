@@ -571,9 +571,8 @@ fn run_server(serve: &Serve) -> Result<()> {
     let server = builder.build()?;
     privileges::drop_privileges(serve.puid, serve.pgid)?;
     let _logs = telemetry::write_in_background();
-    // Stdout is the interface scripts use to find the port, so these aren't log events.
     for url in server.urls() {
-        println!("listening on {url}");
+        tracing::info!(%url, "server.listening");
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
