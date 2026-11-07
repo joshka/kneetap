@@ -91,7 +91,8 @@ even if the client still answers pings. Run `kneetap serve --help` to change any
 ## Startup
 
 kneetap tries to start whatever happens, because it's often deployed to find out what's wrong.
-Reports list what it worked around under `serverStatus.degradations`.
+Reports list what it worked around under `serverStatus.degradations`: `http_port_moved` means HTTP
+is up on its fallback port, and `http_bind_failed` means HTTP is off. HTTPS has the same pair.
 
 | Problem | What happens |
 | --- | --- |
@@ -128,8 +129,8 @@ healthcheck:
 
 Started as root, kneetap binds its ports, reads its certificates, then switches to UID and GID
 65532, or to `--puid` and `--pgid` (`PUID` and `PGID`) if set. It verifies the change and exits if
-it didn't work. Files it reloads later must be readable by that user. `PUID=0` stays root and logs
-a warning.
+it didn't work. Files it reloads later must be readable by that user. `PUID=0` stays root, keeps
+group 0 unless `PGID` is set, and logs a warning.
 
 ## Logs
 
@@ -143,7 +144,8 @@ behind, new lines are dropped.
 
 On `SIGTERM` or an interrupt, kneetap reports unhealthy, stops accepting connections, closes
 WebSockets and quiet gRPC streams, and lets requests in progress finish for up to
-`--shutdown-timeout`, 10 seconds by default.
+`--shutdown-timeout`, 10 seconds by default. `--shutdown-timeout 0s` closes every connection and
+exits at once.
 
 ## Related projects
 

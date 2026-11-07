@@ -76,7 +76,7 @@ expect_identity "$id" 1000:1001
 echo "PUID=0 stays root and warns"
 start -e PUID=0 "$image"
 wait_healthy "$id"
-expect_identity "$id" 0:65532
+expect_identity "$id" 0:0
 docker logs "$id" 2>&1 | grep -q privileges.root.retained
 
 echo "a non-root user falls back to high ports"

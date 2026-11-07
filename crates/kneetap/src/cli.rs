@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::builder::BoolishValueParser;
 use clap::{Args, Parser, Subcommand};
 use kneetap_client::{Client, ClientBuilder};
@@ -16,6 +16,9 @@ use crate::startup::{
     Strictness,
 };
 use crate::telemetry::{self, LogFormat, Verbosity};
+
+/// Reported when HTTPS is up on its fallback port.
+const HTTPS_PORT_MOVED: &str = "https_port_moved";
 
 /// Command-line arguments.
 #[derive(Debug, Parser)]
@@ -79,7 +82,7 @@ struct Serve {
     #[arg(long, env = "KNEETAP_NO_HTTP", value_parser = BoolishValueParser::new())]
     no_http: bool,
 
-    /// Don't serve HTTPS, whatever the TLS options say
+    /// Don't serve HTTPS, which can't be combined with TLS files
     #[arg(long, env = "KNEETAP_NO_TLS", value_parser = BoolishValueParser::new())]
     no_tls: bool,
 
@@ -131,7 +134,7 @@ struct Serve {
     #[arg(long, env = "KNEETAP_IDLE_TIMEOUT", default_value = "60s", value_parser = positive_duration)]
     idle_timeout: Duration,
 
-    /// Time allowed for work in progress to finish after a shutdown signal
+    /// Time allowed for work in progress to finish after a shutdown signal; `0s` exits at once
     #[arg(long, env = "KNEETAP_SHUTDOWN_TIMEOUT", default_value = "10s", value_parser = humantime::parse_duration)]
     shutdown_timeout: Duration,
 
@@ -139,7 +142,7 @@ struct Serve {
     #[arg(long, env = "PUID")]
     puid: Option<u32>,
 
-    /// Group ID to run as after binding, when started as root [default: 65532]
+    /// Group ID to run as after binding, when started as root [default: 65532, or 0 if PUID is 0]
     #[arg(long, env = "PGID")]
     pgid: Option<u32>,
 }
@@ -451,6 +454,7 @@ async fn run_report(args: ReportArgs) -> Result<()> {
 
 /// Binds before starting the runtime, so a failure to bind is reported without starting threads.
 fn run_server(serve: &Serve) -> Result<()> {
+    check_tls_files(serve)?;
     let mut builder = Server::builder()
         .reload_interval(serve.tls_reload_interval)
         .max_connections(serve.max_connections as usize)
@@ -483,7 +487,8 @@ fn run_server(serve: &Serve) -> Result<()> {
             explicit: serve.port,
             default: DEFAULT_HTTP_PORT,
             fallback: FALLBACK_HTTP_PORT,
-            degradation: "http_bind_failed",
+            moved: "http_port_moved",
+            failed: "http_bind_failed",
         };
         startup::open(serve.bind, choice, strictness, &mut degradations)?
     };
@@ -494,7 +499,8 @@ fn run_server(serve: &Serve) -> Result<()> {
             explicit: serve.tls_port,
             default: DEFAULT_TLS_PORT,
             fallback: FALLBACK_TLS_PORT,
-            degradation: "https_bind_failed",
+            moved: HTTPS_PORT_MOVED,
+            failed: "https_bind_failed",
         };
         startup::open(serve.bind, choice, strictness, &mut degradations)?
     };
@@ -528,6 +534,18 @@ fn run_server(serve: &Serve) -> Result<()> {
         runtime.spawn(forward_hangups(server.reload_handle()));
     }
     runtime.block_on(server.serve(shutdown_signal()))?;
+    Ok(())
+}
+
+/// Refuses TLS files that `--no-tls` would ignore, since clients could then be unencrypted or
+/// unauthenticated without anyone noticing. A clap conflict would also refuse
+/// `KNEETAP_NO_TLS=false`.
+fn check_tls_files(serve: &Serve) -> Result<()> {
+    let has_files = serve.cert.is_some() || serve.key.is_some() || serve.cacert.is_some();
+    ensure!(
+        !(serve.no_tls && has_files),
+        "--no-tls can't be combined with --cert, --key, or --cacert"
+    );
     Ok(())
 }
 
@@ -627,6 +645,8 @@ fn recover_tls(
         };
         tracing::warn!(%error, "tls.retry.failed");
     }
+    // HTTPS is off now, so it can't also be reported as up on its fallback port.
+    degradations.retain(|degradation| degradation != HTTPS_PORT_MOVED);
     degradations.push("tls_setup_failed".to_owned());
     None
 }
@@ -676,7 +696,7 @@ mod tests {
 
     #[test]
     fn a_failed_retry_turns_https_off_rather_than_stopping() {
-        let mut degradations = Vec::new();
+        let mut degradations = vec![HTTPS_PORT_MOVED.to_owned()];
         let retry = |_: &TlsConfig| Err(identity_error());
 
         let tls = recover_tls(missing_files(), &identity_error(), &mut degradations, retry);
@@ -731,6 +751,19 @@ mod tests {
     #[test]
     fn command_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[rstest]
+    #[case(&["--cert", "cert.pem", "--key", "key.pem"])]
+    #[case(&["--cacert", "ca.pem"])]
+    fn no_tls_refuses_tls_files_it_would_ignore(#[case] files: &[&str]) {
+        let arguments = [&["kneetap", "serve", "--no-tls"], files].concat();
+
+        let Command::Serve(serve) = Cli::try_parse_from(arguments).unwrap().command else {
+            panic!("expected the serve command");
+        };
+
+        assert!(check_tls_files(&serve).is_err());
     }
 
     #[test]

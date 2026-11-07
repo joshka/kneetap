@@ -18,7 +18,7 @@ pub fn drop_privileges(uid: Option<u32>, gid: Option<u32>) -> anyhow::Result<()>
         }
         return Ok(());
     }
-    let (uid, gid) = (uid.unwrap_or(DEFAULT_ID), gid.unwrap_or(DEFAULT_ID));
+    let (uid, gid) = target_ids(uid, gid);
     if uid == 0 {
         tracing::warn!("privileges.root.retained");
     }
@@ -53,6 +53,15 @@ pub fn drop_privileges(uid: Option<u32>, gid: Option<u32>) -> anyhow::Result<()>
     Ok(())
 }
 
+/// Fills in unset IDs. Staying root keeps root's group, since a request for root isn't a request to
+/// lose its group.
+#[cfg(unix)]
+fn target_ids(uid: Option<u32>, gid: Option<u32>) -> (u32, u32) {
+    let uid = uid.unwrap_or(DEFAULT_ID);
+    let default_gid = if uid == 0 { 0 } else { DEFAULT_ID };
+    (uid, gid.unwrap_or(default_gid))
+}
+
 /// Refuses an identity that can't be applied here, rather than running with more privilege than
 /// the operator asked for.
 #[cfg(not(unix))]
@@ -62,4 +71,25 @@ pub fn drop_privileges(uid: Option<u32>, gid: Option<u32>) -> anyhow::Result<()>
         "PUID and PGID aren't supported on this platform"
     );
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case(None, None, (DEFAULT_ID, DEFAULT_ID))]
+    #[case(Some(1000), None, (1000, DEFAULT_ID))]
+    #[case(None, Some(1001), (DEFAULT_ID, 1001))]
+    #[case(Some(0), None, (0, 0))]
+    #[case(Some(0), Some(1001), (0, 1001))]
+    fn unset_ids_get_defaults(
+        #[case] uid: Option<u32>,
+        #[case] gid: Option<u32>,
+        #[case] ids: (u32, u32),
+    ) {
+        assert_eq!(target_ids(uid, gid), ids);
+    }
 }
