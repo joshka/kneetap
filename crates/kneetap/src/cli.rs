@@ -571,7 +571,8 @@ fn run_server(serve: &Serve) -> Result<()> {
     let server = builder.build()?;
     privileges::drop_privileges(serve.puid, serve.pgid)?;
     let _logs = telemetry::write_in_background();
-    for url in server.urls() {
+    let interfaces = startup::interface_addresses();
+    for url in startup::reachable_urls(&server.urls(), &interfaces) {
         tracing::info!(%url, "server.listening");
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()

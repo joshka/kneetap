@@ -1085,6 +1085,7 @@ dependencies = [
  "anyhow",
  "clap",
  "humantime",
+ "if-addrs",
  "kneetap-client",
  "kneetap-server",
  "privdrop",
