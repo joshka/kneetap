@@ -71,9 +71,11 @@ working certificate and reports the failure in `serverStatus.reloadError`.
 
 Connections and requests are bounded, so stalled and abandoned connections can't keep capacity for
 long. These limits are shared across clients, so a busy client can still use them up. Long-lived
-streams hold capacity while they stay open, with no idle timeout: a WebSocket counts as a
-connection, and a gRPC health watch counts as a request. Run `kneetap serve --help` to change any of
-these.
+streams hold capacity only while they're in use: a WebSocket counts as a connection until the client
+sends no messages for the idle timeout, and a gRPC health watch counts as a request until it has
+nothing to report for that long, when it ends as `UNAVAILABLE` so the client can call again. An
+HTTP/2 connection closes when a response can't send its next chunk within the blocked write timeout,
+even if the client still answers pings. Run `kneetap serve --help` to change any of these.
 
 | Limit | Default |
 | --- | --- |
@@ -81,7 +83,7 @@ these.
 | Requests in progress | 1024 |
 | TLS handshake, or first bytes and headers | 10 seconds each |
 | Reading a request body, or a blocked write | 30 seconds each |
-| A connection with no requests | 60 seconds |
+| A connection with no requests, or a quiet WebSocket or gRPC stream | 60 seconds |
 | Request body and WebSocket message | 1 MiB each |
 | `/data` response | 10 GB |
 | `?wait=` delay | 5 minutes |
@@ -140,8 +142,8 @@ behind, new lines are dropped.
 ## Stopping
 
 On `SIGTERM` or an interrupt, kneetap reports unhealthy, stops accepting connections, closes
-WebSockets, and lets requests in progress finish for up to `--shutdown-timeout`, 10 seconds by
-default.
+WebSockets and quiet gRPC streams, and lets requests in progress finish for up to
+`--shutdown-timeout`, 10 seconds by default.
 
 ## Related projects
 

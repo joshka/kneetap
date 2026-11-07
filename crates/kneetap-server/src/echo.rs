@@ -26,13 +26,17 @@ pub async fn upgrade(context: &Context, parts: &mut Parts) -> Result<Response, R
     // Taken before the upgrade completes, so that shutdown also waits for a pending upgrade.
     let tracked = context.websockets.token();
     let stop = context.stop.clone();
-    let close_timeout = context.shutdown_timeout;
+    let timeouts = Timeouts {
+        idle: context.idle_timeout,
+        write: context.write_idle_timeout,
+        close: context.shutdown_timeout,
+    };
     Ok(upgrade
         .max_message_size(limit)
         .max_frame_size(limit)
         .on_upgrade(move |socket| async move {
             let _held = (guard, tracked);
-            echo(socket, stop, close_timeout).await;
+            echo(socket, stop, timeouts).await;
         })
         .into_response())
 }
@@ -80,24 +84,44 @@ fn same_origin(origin: &str, authority: &str) -> Option<bool> {
     Some(same_port && origin.host_str()?.eq_ignore_ascii_case(authority.host()))
 }
 
-/// Echoes text and binary messages until either side closes, or the server shuts down.
-async fn echo(mut socket: WebSocket, stop: CancellationToken, close_timeout: Duration) {
+/// How long an open `WebSocket` may wait on its client.
+#[derive(Clone, Copy)]
+struct Timeouts {
+    idle: Duration,
+    write: Duration,
+    close: Duration,
+}
+
+/// Echoes text and binary messages until either side closes, the client goes quiet, or the server
+/// shuts down.
+///
+/// Only messages count as activity, because pings say nothing about need. Sends have their own
+/// deadline because an HTTP/2 `WebSocket` blocks on flow control, which the socket can't see.
+async fn echo(mut socket: WebSocket, stop: CancellationToken, timeouts: Timeouts) {
+    let idle = tokio::time::sleep(timeouts.idle);
+    tokio::pin!(idle);
     loop {
         let received = tokio::select! {
             received = socket.recv() => received,
             () = stop.cancelled() => {
-                return close(socket, close_code::AWAY, "server shutting down", close_timeout).await;
+                let reason = "server shutting down";
+                return close(socket, close_code::AWAY, reason, timeouts.close).await;
+            }
+            () = &mut idle => {
+                return close(socket, close_code::AWAY, "idle timeout", timeouts.close).await;
             }
         };
         match received {
             Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
-                if socket.send(message).await.is_err() {
+                let sent = tokio::time::timeout(timeouts.write, socket.send(message)).await;
+                if !matches!(sent, Ok(Ok(()))) {
                     return;
                 }
+                idle.set(tokio::time::sleep(timeouts.idle));
             }
             // The next `recv` flushes the queued close reply, then ends the stream.
             Some(Ok(Message::Close(_) | Message::Ping(_) | Message::Pong(_))) => {}
-            Some(Err(error)) => return end_after_error(socket, error, close_timeout).await,
+            Some(Err(error)) => return end_after_error(socket, error, timeouts.close).await,
             None => return,
         }
     }
@@ -115,7 +139,8 @@ async fn end_after_error(socket: WebSocket, error: axum::Error, timeout: Duratio
     }
 }
 
-/// Tells the client why the connection is ending, then waits up to `timeout` for its close reply.
+/// Tells the client why the connection is ending, then waits for its close reply, all within
+/// `timeout`.
 ///
 /// A client that can't be told is already gone.
 async fn close(mut socket: WebSocket, code: u16, reason: &'static str, timeout: Duration) {
@@ -123,11 +148,12 @@ async fn close(mut socket: WebSocket, code: u16, reason: &'static str, timeout: 
         code,
         reason: reason.into(),
     };
-    if socket.send(Message::Close(Some(frame))).await.is_err() {
-        return;
-    }
-    let replied = async { while let Some(Ok(_)) = socket.recv().await {} };
-    let _ = tokio::time::timeout(timeout, replied).await;
+    let closing = async {
+        if socket.send(Message::Close(Some(frame))).await.is_ok() {
+            while let Some(Ok(_)) = socket.recv().await {}
+        }
+    };
+    let _ = tokio::time::timeout(timeout, closing).await;
 }
 
 #[cfg(test)]

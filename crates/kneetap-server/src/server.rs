@@ -68,8 +68,8 @@ impl Server {
 
     /// Handles requests until `shutdown` completes.
     ///
-    /// Shutdown reports unhealthy, stops accepting connections, closes `WebSocket` connections, and
-    /// lets requests in progress finish, for up to the [shutdown
+    /// Shutdown reports unhealthy, stops accepting connections, closes `WebSocket` connections and
+    /// quiet gRPC streams, and lets requests in progress finish, for up to the [shutdown
     /// timeout](ServerBuilder::shutdown_timeout).
     ///
     /// # Errors
@@ -100,6 +100,8 @@ impl Server {
             max_ws_message_size: settings.max_ws_message_size,
             status,
             body_timeout: settings.limits.body_timeout,
+            write_idle_timeout: settings.limits.write_idle_timeout,
+            idle_timeout: settings.limits.idle_timeout,
             shutdown_timeout: settings.limits.shutdown_timeout,
             websockets: websockets.clone(),
             stop: stop.clone(),
@@ -274,13 +276,21 @@ impl ServerBuilder {
     }
 
     /// Sets how long a write may wait for a client to read. The default is 30 seconds.
+    ///
+    /// An HTTP/2 connection closes when a response goes this long without the client's flow-control
+    /// window letting its next chunk out. `/data` sends 64 KiB chunks, so the slowest download that
+    /// survives the default is about 2 KiB per second.
     #[must_use]
     pub const fn write_idle_timeout(mut self, timeout: Duration) -> Self {
         self.limits.write_idle_timeout = timeout;
         self
     }
 
-    /// Sets how long a connection may stay open with no requests. The default is 60 seconds.
+    /// Sets how long a connection may stay open with no requests, and how long a `WebSocket` or
+    /// gRPC stream may stay open with nothing to deliver. The default is 60 seconds.
+    ///
+    /// A `WebSocket` counts client messages, not pings. A gRPC stream counts messages it sends, and
+    /// ends as `UNAVAILABLE` so that a health watcher knows to call again.
     #[must_use]
     pub const fn idle_timeout(mut self, timeout: Duration) -> Self {
         self.limits.idle_timeout = timeout;

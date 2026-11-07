@@ -23,14 +23,16 @@ Order matters, because some steps need privileges that later steps give up.
 
 1. A connection permit is taken, or the connection is closed.
 2. TLS listeners complete the handshake within its deadline.
-3. `Deadlines` wraps the socket, closing silent connections and blocked writes. It keeps the
-   connection permit, so an upgraded WebSocket still counts.
+3. `Deadlines` wraps the socket, closing silent connections, incomplete HTTP/2 header blocks, and
+   blocked writes. It keeps the connection permit, so an upgraded WebSocket still counts.
 4. `hyper-util` detects HTTP/1.1 or HTTP/2.
 5. Each request takes a request permit or gets a 503. `TrackedBody` holds that permit until the
    response finishes or the client disconnects.
 6. The connection closes when the client leaves, the server stops, or it has no requests for the
-   idle timeout. Requests count rather than traffic, because pings say nothing about need. An
-   open WebSocket has no idle timeout, and holds its permit until it closes.
+   idle timeout. Requests count rather than traffic, because pings say nothing about need. A
+   WebSocket or gRPC stream with no messages for that long ends too. An HTTP/2 response stalled by
+   flow control for the write timeout closes the connection, because hyper stops polling its body
+   and can't reset one stream from outside.
 
 ## A request
 
@@ -46,5 +48,5 @@ swapped in for new connections. Existing connections keep the certificates they 
 
 1. Health turns unhealthy, over HTTP and gRPC.
 2. Listeners stop accepting, and idle connections close.
-3. WebSockets get a going-away close frame.
+3. WebSockets get a going-away close frame, and quiet gRPC streams end as `UNAVAILABLE`.
 4. Requests in progress finish, sharing one deadline. Anything left then is dropped.
