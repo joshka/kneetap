@@ -72,7 +72,7 @@ impl Reporter for Service {
         request: Request<GetReportRequest>,
     ) -> Result<Response<GetReportResponse>, Status> {
         let peer = request.extensions().get::<ConnectInfo<SocketAddr>>();
-        let remote_addr = peer.map(|info| info.0.to_string()).unwrap_or_default();
+        let remote_addr = peer.map_or_default(|info| info.0.to_string());
         Ok(Response::new(GetReportResponse {
             name: self.0.name.clone(),
             hostname: self.0.host.name.clone(),
