@@ -75,8 +75,7 @@ impl Server {
     ///
     /// # Errors
     ///
-    /// Returns an error if a socket can't be handed to the async runtime, or the OS can't provide
-    /// the random bytes that request IDs start with.
+    /// Returns an error if a socket can't be handed to the async runtime.
     pub async fn serve<F>(self, shutdown: F) -> Result<(), Error>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -90,9 +89,8 @@ impl Server {
         let certificates = tls.map(|(tls, config)| Certificates::new(tls, config, status.clone()));
         let certificates = certificates.map(Arc::new);
         let health = Health::new(reporter, settings.name.as_deref()).await;
-        let identity = Identity::new(settings.name, Host::detect(), settings.commit);
         let context = Arc::new(Context {
-            identity: identity.map_err(Error::entropy)?,
+            identity: Identity::new(settings.name, Host::detect(), settings.commit),
             max_body_size: settings.max_body_size,
             max_wait: settings.max_wait,
             enable_env: settings.enable_env,

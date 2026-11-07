@@ -324,11 +324,16 @@ async fn admit(
         if refusals.allow(LOG_INTERVAL) {
             tracing::warn!(%method, %path, "request.admission.refused");
         }
-        let mut response = Response::new(Body::from("request capacity exhausted\n"));
-        *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
-        return Ok(response);
+        return Ok(unavailable("request capacity exhausted\n"));
     };
-    request.extensions_mut().insert(Arrival(SystemTime::now()));
+    let arrival = Arrival::now().inspect_err(|error| {
+        tracing::warn!(%method, %path, %error, "request.id.failed");
+    });
+    // Refusing one request is better than reusing an ID, which would merge two reports.
+    let Ok(arrival) = arrival else {
+        return Ok(unavailable("request IDs are unavailable\n"));
+    };
+    request.extensions_mut().insert(arrival);
     let guard = activity.begin();
     let version = request.version();
     // An upgrade outlives its response, so it has to mark itself as a request in progress.
@@ -339,4 +344,11 @@ async fn admit(
     let wait = (version == Version::HTTP_2).then(|| activity.track_response());
     tracing::debug!(%method, %path, status = response.status().as_u16(), "request.handled");
     Ok(response.map(|body| Body::new(TrackedBody::new(body, permit, guard, wait))))
+}
+
+/// Refuses a request the server can't take on now.
+fn unavailable(message: &'static str) -> Response {
+    let mut response = Response::new(Body::from(message));
+    *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+    response
 }
