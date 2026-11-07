@@ -15,7 +15,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
+clap = { workspace = true, features = ["color", "derive", "env", "error-context", "help", "std", "usage"] }
 humantime.workspace = true
 kneetap-client.workspace = true
 kneetap-server.workspace = true

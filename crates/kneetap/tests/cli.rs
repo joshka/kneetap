@@ -622,3 +622,35 @@ fn turning_off_both_listeners_is_an_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
 }
+
+/// The line of `kneetap --help` that introduces the usage, with `variables` set and without
+/// Windows' `.exe` suffix.
+fn help_usage_line(variables: &[(&str, &str)]) -> String {
+    let output = Command::new(BINARY)
+        .arg("--help")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("NO_COLOR")
+        .envs(variables.iter().copied())
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout.lines().find(|line| line.contains("Usage:"));
+    line.unwrap().replace(".exe", "")
+}
+
+#[test]
+fn help_is_plain_when_piped() {
+    let line = help_usage_line(&[]);
+
+    assert_eq!(line, "Usage: kneetap [OPTIONS] <COMMAND>");
+}
+
+#[test]
+fn help_is_colored_when_color_is_forced() {
+    let line = help_usage_line(&[("CLICOLOR_FORCE", "1")]);
+
+    let expected = "\u{1b}[1m\u{1b}[33mUsage:\u{1b}[0m \u{1b}[1m\u{1b}[32mkneetap\u{1b}[0m \
+                    \u{1b}[36m[OPTIONS]\u{1b}[0m \u{1b}[36m<COMMAND>\u{1b}[0m";
+    assert_eq!(line, expected);
+}
