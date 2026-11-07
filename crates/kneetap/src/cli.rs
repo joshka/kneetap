@@ -504,6 +504,12 @@ async fn run_report(args: ReportArgs) -> Result<()> {
 
 /// Binds before starting the runtime, so a failure to bind is reported without starting threads.
 fn run_server(serve: &Serve) -> Result<()> {
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        commit = option_env!("VERGEN_GIT_SHA"),
+        repository = env!("CARGO_PKG_REPOSITORY"),
+        "server.starting"
+    );
     check_tls_files(serve)?;
     let mut builder = Server::builder()
         .reload_interval(serve.tls_reload_interval)
