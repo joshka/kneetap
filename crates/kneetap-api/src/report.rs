@@ -29,7 +29,7 @@ pub struct Report {
     /// When the server started serving, as an RFC 3339 UTC timestamp.
     pub started_at: String,
 
-    /// An ID for this request that no other request to any server has.
+    /// A random ID for this request, which tells its report apart from others.
     pub request_id: String,
 
     /// When the server received this request, as an RFC 3339 UTC timestamp.
@@ -265,7 +265,7 @@ mod tests {
             version: "1.2.3".to_owned(),
             commit: None,
             started_at: "2026-11-07T08:00:00.000Z".to_owned(),
-            request_id: "Hq7mW2pL-7".to_owned(),
+            request_id: "Hq7mW2pL".to_owned(),
             received_at: "2026-11-07T09:00:00.250Z".to_owned(),
             remote_addr: "10.0.0.9:4000".to_owned(),
             connection: ConnectionReport {
@@ -294,7 +294,7 @@ mod tests {
         IP: 10.0.0.5
         Version: 1.2.3
         Started: 2026-11-07T08:00:00.000Z
-        Request: Hq7mW2pL-7
+        Request: Hq7mW2pL
         Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
         Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
@@ -324,7 +324,7 @@ mod tests {
         IP: 10.0.0.5
         Version: 1.2.3
         Started: 2026-11-07T08:00:00.000Z
-        Request: Hq7mW2pL-7
+        Request: Hq7mW2pL
         Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
         Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
@@ -350,7 +350,7 @@ mod tests {
         IP: 10.0.0.5
         Version: 1.2.3
         Started: 2026-11-07T08:00:00.000Z
-        Request: Hq7mW2pL-7
+        Request: Hq7mW2pL
         Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
         Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
@@ -404,7 +404,7 @@ mod tests {
         IP: 10.0.0.5
         Version: 1.2.3
         Started: 2026-11-07T08:00:00.000Z
-        Request: Hq7mW2pL-7
+        Request: Hq7mW2pL
         Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
         Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
@@ -427,7 +427,7 @@ mod tests {
         IP: 10.0.0.5
         Version: 1.2.3
         Started: 2026-11-07T08:00:00.000Z
-        Request: Hq7mW2pL-7
+        Request: Hq7mW2pL
         Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
         Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
@@ -452,7 +452,7 @@ mod tests {
         IP: 10.0.0.5
         Version: 1.2.3
         Started: 2026-11-07T08:00:00.000Z
-        Request: Hq7mW2pL-7
+        Request: Hq7mW2pL
         Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
         Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)

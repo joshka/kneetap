@@ -336,7 +336,7 @@ components:
           description: When the server started serving, in UTC.
         requestId:
           type: string
-          description: An ID for this request that no other request to any server has.
+          description: A random ID for this request, which tells its report apart from others.
         receivedAt:
           type: string
           format: date-time

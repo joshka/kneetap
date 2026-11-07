@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -101,8 +101,8 @@ impl Reporter for Service {
     ) -> Result<Response<GetReportResponse>, Status> {
         let peer = request.extensions().get::<ConnectInfo<SocketAddr>>();
         let remote_addr = peer.map_or_default(|info| info.0.to_string());
-        let received_at = request.extensions().get::<Arrival>();
-        let received_at = received_at.map_or_else(SystemTime::now, |arrival| arrival.0);
+        let arrival = request.extensions().get::<Arrival>();
+        let arrival = arrival.expect("the listener attaches the arrival");
         let identity = &self.0.identity;
         Ok(Response::new(GetReportResponse {
             name: identity.name.clone(),
@@ -113,8 +113,8 @@ impl Reporter for Service {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             commit: identity.commit(),
             started_at: identity.started_at(),
-            request_id: identity.next_request_id(),
-            received_at: identity::timestamp(received_at),
+            request_id: arrival.request_id.clone(),
+            received_at: identity::timestamp(arrival.at),
             connection: request
                 .extensions()
                 .get::<ConnectionReport>()

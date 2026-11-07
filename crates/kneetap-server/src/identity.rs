@@ -1,42 +1,25 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use crate::host::Host;
 
-/// What identifies a running server, and the source of its request IDs.
+/// What identifies a running server.
 #[derive(Debug)]
 pub struct Identity {
     pub name: Option<String>,
     pub host: Host,
     started_at: SystemTime,
     commit: Option<String>,
-    prefix: String,
-    count: AtomicU64,
 }
 
 impl Identity {
     /// Starts identifying a server that begins serving now.
-    ///
-    /// The ID prefix is random, so IDs don't repeat across restarts or replicas.
-    pub fn new(
-        name: Option<String>,
-        host: Host,
-        commit: Option<String>,
-    ) -> Result<Self, getrandom::Error> {
-        Ok(Self {
+    pub fn new(name: Option<String>, host: Host, commit: Option<String>) -> Self {
+        Self {
             name,
             host,
             started_at: SystemTime::now(),
             commit,
-            prefix: random_id()?,
-            count: AtomicU64::new(0),
-        })
-    }
-
-    /// Returns an ID that no other request to this server or any other has.
-    pub fn next_request_id(&self) -> String {
-        let count = self.count.fetch_add(1, Ordering::Relaxed) + 1;
-        format!("{}-{count}", self.prefix)
+        }
     }
 
     /// When the server started serving, in RFC 3339.
@@ -67,9 +50,28 @@ pub fn random_id() -> Result<String, getrandom::Error> {
     Ok(id)
 }
 
-/// When a request arrived, recorded before it waits for anything else.
-#[derive(Clone, Copy, Debug)]
-pub struct Arrival(pub SystemTime);
+/// When a request arrived and the ID its report carries, recorded before it waits for anything.
+#[derive(Clone, Debug)]
+pub struct Arrival {
+    pub at: SystemTime,
+    pub request_id: String,
+}
+
+impl Arrival {
+    /// Records a request arriving now.
+    ///
+    /// The ID is random rather than counted, so reports don't reveal how busy the server is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OS can't provide random bytes.
+    pub fn now() -> Result<Self, getrandom::Error> {
+        Ok(Self {
+            at: SystemTime::now(),
+            request_id: random_id()?,
+        })
+    }
+}
 
 /// Formats a time as RFC 3339 in UTC, to the millisecond.
 pub fn timestamp(time: SystemTime) -> String {
@@ -81,21 +83,6 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-
-    #[test]
-    fn request_ids_differ_within_and_across_servers() {
-        let first = Identity::new(None, Host::default(), None).unwrap();
-        let second = Identity::new(None, Host::default(), None).unwrap();
-
-        let ids = [
-            first.next_request_id(),
-            first.next_request_id(),
-            second.next_request_id(),
-        ];
-
-        assert_ne!(ids[0], ids[1]);
-        assert_ne!(ids[0], ids[2]);
-    }
 
     #[test]
     fn random_ids_are_eight_letters_and_digits() {

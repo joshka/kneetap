@@ -32,7 +32,7 @@ message GetReportResponse {
   optional string commit = 7;
   // When the server started serving, as an RFC 3339 UTC timestamp.
   string started_at = 8;
-  // An ID for this call that no other request to any server has.
+  // A random ID for this call, which tells its report apart from others.
   string request_id = 9;
   // When the server received this call, as an RFC 3339 UTC timestamp.
   string received_at = 10;

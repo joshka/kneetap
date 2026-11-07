@@ -322,6 +322,7 @@ mod tests {
 
     use super::*;
     use crate::host::Host;
+    use crate::identity::Arrival;
 
     const MAX_BODY_SIZE: usize = 4;
 
@@ -334,7 +335,7 @@ mod tests {
 
     async fn context() -> Context {
         Context {
-            identity: Identity::new(Some("blue".to_owned()), host(), None).unwrap(),
+            identity: Identity::new(Some("blue".to_owned()), host(), None),
             max_body_size: MAX_BODY_SIZE,
             max_wait: Duration::from_secs(60),
             enable_env: false,
@@ -368,6 +369,7 @@ mod tests {
         let peer: SocketAddr = "10.0.0.9:4000".parse().unwrap();
         let extensions = request.extensions_mut();
         extensions.insert(ConnectInfo(peer));
+        extensions.insert(Arrival::now().unwrap());
         extensions.insert(ConnectionReport {
             id: "aZ3kQ9xB".to_owned(),
             request_number: 2,

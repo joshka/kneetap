@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::time::SystemTime;
 
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, header};
@@ -31,8 +30,8 @@ pub fn build(
         Ok(text) => (text.to_owned(), BodyEncoding::Text),
         Err(_) => (STANDARD.encode(body), BodyEncoding::Base64),
     };
-    let received_at = parts.extensions.get::<Arrival>();
-    let received_at = received_at.map_or_else(SystemTime::now, |arrival| arrival.0);
+    let arrival = parts.extensions.get::<Arrival>();
+    let arrival = arrival.expect("the listener attaches the arrival");
     Report {
         name: identity.name.clone(),
         hostname: identity.host.name.clone(),
@@ -40,8 +39,8 @@ pub fn build(
         version: env!("CARGO_PKG_VERSION").to_owned(),
         commit: identity.commit(),
         started_at: identity.started_at(),
-        request_id: identity.next_request_id(),
-        received_at: identity::timestamp(received_at),
+        request_id: arrival.request_id.clone(),
+        received_at: identity::timestamp(arrival.at),
         remote_addr: peer.to_string(),
         connection: parts
             .extensions
@@ -88,6 +87,7 @@ mod tests {
     use crate::host::Host;
 
     fn parts(mut request: Request<()>) -> Parts {
+        request.extensions_mut().insert(Arrival::now().unwrap());
         request.extensions_mut().insert(ConnectionReport {
             id: "aZ3kQ9xB".to_owned(),
             request_number: 1,
@@ -98,7 +98,7 @@ mod tests {
 
     fn report(request: Request<()>, body: &[u8]) -> Report {
         let peer = "10.0.0.9:4000".parse().unwrap();
-        let identity = Identity::new(None, Host::default(), None).unwrap();
+        let identity = Identity::new(None, Host::default(), None);
         build(&identity, peer, None, &parts(request), body)
     }
 
