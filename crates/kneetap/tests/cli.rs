@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
+use std::time::Duration;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_kneetap");
 
@@ -294,7 +295,7 @@ fn serve_verbose(args: &[&str]) -> (Child, String) {
             "--no-tls",
         ])
         .args(args)
-        .env_remove("RUST_LOG")
+        .env_remove("KNEETAP_LOG")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -316,6 +317,27 @@ fn exchange(address: &str, bytes: &[u8]) -> String {
     String::from_utf8_lossy(&response).into_owned()
 }
 
+/// Reads stderr up to the first handled request, then stops the server and returns what it read.
+///
+/// A server writes logs in the background, so they can arrive after the response.
+fn logs_through_request(child: &mut Child) -> String {
+    let stderr = BufReader::new(child.stderr.take().unwrap());
+    let (sender, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || stderr.lines().try_for_each(|line| sender.send(line)));
+    let mut logs = String::new();
+    let mut outcome = Ok(());
+    while outcome.is_ok() && !logs.contains("request.handled") {
+        outcome = lines.recv_timeout(Duration::from_secs(10)).map(|line| {
+            logs.push_str(&line.unwrap());
+            logs.push('\n');
+        });
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(outcome, Ok(()), "{logs}");
+    logs
+}
+
 const GET_BENCH: &[u8] = b"GET /bench HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
 
 #[test]
@@ -324,9 +346,7 @@ fn verbose_logs_each_request_to_stderr() {
 
     exchange(&address, GET_BENCH);
 
-    child.kill().unwrap();
-    let output = child.wait_with_output().unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let stderr = logs_through_request(&mut child);
     let event = stderr.lines().find(|line| line.contains("request.handled"));
     let event: serde_json::Value = serde_json::from_str(event.unwrap_or("{}")).unwrap();
     assert_eq!(event["fields"]["path"], "/bench", "{stderr}");
@@ -337,7 +357,7 @@ fn an_invalid_log_filter_is_reported_as_a_log_event() {
     let mut child = Command::new(BINARY)
         .args(["serve", "--log-format", "json"])
         .args(["--bind", "127.0.0.1", "--port", "0", "--no-tls"])
-        .env("RUST_LOG", "kneetap=nonsense")
+        .env("KNEETAP_LOG", "kneetap=nonsense")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -364,10 +384,10 @@ fn verbose_leaves_out_http2_frames() {
         .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\0\0\0\x04\0\0\0\0\0")
         .unwrap();
     stream.read_exact(&mut [0; 9]).unwrap();
+    exchange(&address, GET_BENCH);
 
-    child.kill().unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
+    let stderr = logs_through_request(&mut child);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
 }
 
 #[test]
@@ -376,10 +396,7 @@ fn logs_written_to_a_pipe_have_no_color() {
 
     exchange(&address, GET_BENCH);
 
-    child.kill().unwrap();
-    let output = child.wait_with_output().unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("request.handled"), "{stderr}");
+    let stderr = logs_through_request(&mut child);
     assert_eq!(stderr.find('\x1b'), None, "{stderr}");
 }
 
@@ -399,6 +416,32 @@ fn a_closed_log_pipe_does_not_stop_the_server() {
 
     assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
     assert_eq!(server.child.try_wait().unwrap(), None, "the server exited");
+}
+
+#[test]
+fn a_blocked_log_pipe_does_not_stall_requests() {
+    let (child, address) = serve_verbose(&[]);
+    let scheme = "http".to_owned();
+    let _server = Serve {
+        child,
+        scheme,
+        address: address.clone(),
+    };
+    let path = "x".repeat(4096);
+    let request = format!("GET /{path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
+
+    // Nothing reads stderr, and these lines are several times what a pipe holds.
+    for _ in 0..128 {
+        let mut stream = TcpStream::connect(&address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    }
 }
 
 /// Starts a server and returns its report from `/api`, for checking what it worked around.

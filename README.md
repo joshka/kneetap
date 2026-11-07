@@ -132,7 +132,10 @@ a warning.
 ## Logs
 
 Logs go to stderr, as text or with `--log-format json`. `--verbose` adds a line per request, and
-`RUST_LOG` takes priority over it.
+`KNEETAP_LOG` takes priority over it, using `tracing` filter directives such as
+`kneetap_server=debug`. An invalid value is replaced by the default and logged as
+`telemetry.filter.rejected`. A server never waits for its logs: if whatever reads stderr falls
+behind, new lines are dropped.
 
 ## Stopping
 
