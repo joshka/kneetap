@@ -13,13 +13,14 @@ use kneetap_api::grpc::{
     FILE_DESCRIPTOR_SET, GetReportRequest, GetReportResponse, MetadataEntry, PingRequest,
     PingResponse,
 };
+use tokio_util::sync::CancellationToken;
 use tonic::metadata::KeyAndValueRef;
 use tonic::service::Routes;
 use tonic::{Request, Response, Status};
 use tonic_health::pb::health_server::{Health as HealthApi, HealthServer};
 use tonic_reflection::server::Builder as Reflection;
 
-use crate::limits::DeadlineBody;
+use crate::limits::{DeadlineBody, QuietBody};
 use crate::report::escape;
 use crate::routes::Context;
 
@@ -31,7 +32,11 @@ use crate::routes::Context;
 /// versions because tools differ in which they use.
 pub fn router(context: Arc<Context>, health: HealthServer<impl HealthApi>) -> Router {
     let limit = context.max_body_size;
-    let timeout = context.body_timeout;
+    let bounds = Bounds {
+        body_timeout: context.body_timeout,
+        idle_timeout: context.idle_timeout,
+        stop: context.stop.clone(),
+    };
     let reflection_v1 = reflection().build_v1();
     let reflection_v1 = reflection_v1.expect("the embedded descriptor is valid");
     let reflection_alpha = reflection().build_v1alpha();
@@ -42,21 +47,38 @@ pub fn router(context: Arc<Context>, health: HealthServer<impl HealthApi>) -> Ro
         .add_service(reflection_v1.max_decoding_message_size(limit))
         .add_service(reflection_alpha.max_decoding_message_size(limit))
         .into_axum_router()
-        .layer(middleware::from_fn_with_state(timeout, bound_body))
+        .layer(middleware::from_fn_with_state(bounds, bound_call))
 }
 
-/// Applies the body timeout to a call, because tonic reads request bodies itself.
+/// What limits a call's streams.
+#[derive(Clone)]
+struct Bounds {
+    body_timeout: Duration,
+    idle_timeout: Duration,
+    stop: CancellationToken,
+}
+
+/// Bounds both of a call's streams, because tonic reads and writes their bodies itself.
 ///
 /// This sits on the routes rather than matching a content type, which tonic doesn't require.
-async fn bound_body(
-    State(timeout): State<Duration>,
+async fn bound_call(
+    State(bounds): State<Bounds>,
     request: extract::Request,
     next: Next,
 ) -> response::Response {
-    let request = request.map(|body| Body::new(DeadlineBody::new(body, timeout)));
-    let call = tokio::time::timeout(timeout, next.run(request));
-    call.await
-        .unwrap_or_else(|_| StatusCode::REQUEST_TIMEOUT.into_response())
+    let Bounds {
+        body_timeout,
+        idle_timeout,
+        stop,
+    } = bounds;
+    let ended = CancellationToken::new();
+    let reading = ended.clone();
+    let request = request.map(|body| Body::new(DeadlineBody::new(body, body_timeout, reading)));
+    let call = tokio::time::timeout(body_timeout, next.run(request)).await;
+    let Ok(response) = call else {
+        return StatusCode::REQUEST_TIMEOUT.into_response();
+    };
+    response.map(|body| Body::new(QuietBody::new(body, idle_timeout, stop, ended)))
 }
 
 /// Starts a reflection service describing the embedded package and the health service.

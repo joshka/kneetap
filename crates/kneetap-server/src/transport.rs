@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Request};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, Version};
 use axum::response::Response;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
@@ -82,14 +82,17 @@ struct Shared {
     connections: Arc<Semaphore>,
     requests: Arc<Semaphore>,
     stop: CancellationToken,
-    refusals: Arc<Throttle>,
+
+    /// Kept apart so a flood of one kind can't silence the log of the other.
+    connection_refusals: Arc<Throttle>,
+    request_refusals: Arc<Throttle>,
 }
 
 /// Accepts connections on every listener until `stop` is cancelled, then drains them.
 ///
 /// All connections, upgraded or not, share one deadline. When it passes, dropping the tasks ends
 /// the remaining connections. `WebSocket` tasks aren't owned here, and have already been told to
-/// stop, so one stuck writing ends at its write deadline.
+/// stop, so one stuck writing ends at its own close deadline.
 ///
 /// Each connection is served directly so that handlers can see facts only it knows, such as the
 /// client certificate from the handshake, and so limits can own each connection's lifetime.
@@ -107,7 +110,8 @@ pub async fn run(
         connections: Arc::new(Semaphore::new(limits.max_connections)),
         requests: Arc::new(Semaphore::new(limits.max_inflight_requests)),
         stop: stop.clone(),
-        refusals: Arc::default(),
+        connection_refusals: Arc::default(),
+        request_refusals: Arc::default(),
     };
     let mut tasks = JoinSet::new();
     for listener in listeners {
@@ -151,7 +155,7 @@ async fn accept(socket: tokio::net::TcpListener, tls: Option<Arc<Certificates>>,
         // Admit without waiting, so that a full server drops new connections rather than having
         // one listener hold the last permit while idle and starve the other.
         let Ok(permit) = shared.connections.clone().try_acquire_owned() else {
-            if shared.refusals.allow(LOG_INTERVAL) {
+            if shared.connection_refusals.allow(LOG_INTERVAL) {
                 tracing::warn!(%peer, "connection.admission.refused");
             }
             continue;
@@ -167,6 +171,8 @@ async fn accept(socket: tokio::net::TcpListener, tls: Option<Arc<Certificates>>,
 }
 
 /// Completes the handshake, if any, then serves requests. Failures only affect this client.
+///
+/// A handshake is abandoned when the server stops, because it has no request to finish.
 async fn connection(
     stream: TcpStream,
     peer: SocketAddr,
@@ -181,7 +187,11 @@ async fn connection(
     };
     let acceptor = TlsAcceptor::from(material.config.clone());
     let handshake = tokio::time::timeout(shared.limits.handshake_timeout, acceptor.accept(stream));
-    let Ok(outcome) = handshake.await else {
+    let handshake = tokio::select! {
+        handshake = handshake => handshake,
+        () = shared.stop.cancelled() => return,
+    };
+    let Ok(outcome) = handshake else {
         tracing::debug!(%peer, "connection.handshake.timed_out");
         return;
     };
@@ -197,6 +207,9 @@ async fn connection(
 }
 
 /// Serves requests on one connection, which finishes those in flight once the server stops.
+///
+/// A response stalled by HTTP/2 flow control closes the whole connection, as a blocked socket write
+/// does, because hyper offers no way to reset one stream from outside.
 async fn serve<I>(io: I, peer: SocketAddr, tls: Option<TlsReport>, shared: Shared)
 where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -204,7 +217,7 @@ where
     let limits = shared.limits;
     let activity = Activity::new();
     let requests = shared.requests.clone();
-    let refusals = shared.refusals.clone();
+    let refusals = shared.request_refusals.clone();
     let app = shared.app.clone();
     let tracked = activity.clone();
     let service = tower::service_fn(move |mut request: Request<Incoming>| {
@@ -247,6 +260,9 @@ where
             connection.as_mut().graceful_shutdown();
             let _ = tokio::time::timeout(limits.write_idle_timeout, connection).await;
         }
+        () = activity.stalled_for(limits.write_idle_timeout) => {
+            tracing::debug!(%peer, "connection.response.stalled");
+        }
     }
 }
 
@@ -269,9 +285,13 @@ async fn admit(
         return Ok(response);
     };
     let guard = activity.begin();
+    let version = request.version();
     // An upgrade outlives its response, so it has to mark itself as a request in progress.
-    request.extensions_mut().insert(activity);
+    request.extensions_mut().insert(activity.clone());
     let response = app.oneshot(request).await?;
+    // Waiting starts here, because a slow handler isn't the client's doing. HTTP/1 has no flow
+    // control of its own, so the socket's write deadline covers it.
+    let wait = (version == Version::HTTP_2).then(|| activity.track_response());
     tracing::debug!(%method, %path, status = response.status().as_u16(), "request.handled");
-    Ok(response.map(|body| Body::new(TrackedBody::new(body, permit, guard))))
+    Ok(response.map(|body| Body::new(TrackedBody::new(body, permit, guard, wait))))
 }

@@ -127,7 +127,7 @@ struct Serve {
     #[arg(long, env = "KNEETAP_WRITE_IDLE_TIMEOUT", default_value = "30s", value_parser = positive_duration)]
     write_idle_timeout: Duration,
 
-    /// Time a connection may stay open with no requests
+    /// Time a connection may stay open with no requests, or a stream with no messages
     #[arg(long, env = "KNEETAP_IDLE_TIMEOUT", default_value = "60s", value_parser = positive_duration)]
     idle_timeout: Duration,
 

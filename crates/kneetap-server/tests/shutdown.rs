@@ -1,19 +1,30 @@
 //! Shutdown, exercised over real sockets.
 
 use std::io::ErrorKind;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
-use kneetap_server::{Error, Server, ServerBuilder};
+use futures_util::{StreamExt, stream};
+use kneetap_server::{Error, Server, ServerBuilder, TlsConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tonic::Code;
+use tonic::transport::Channel;
+use tonic_reflection::pb::v1::ServerReflectionRequest;
+use tonic_reflection::pb::v1::server_reflection_client::ServerReflectionClient;
+use tonic_reflection::pb::v1::server_reflection_request::MessageRequest;
 
 const SETTLE: Duration = Duration::from_millis(100);
+
+/// Longer than a test should ever take, so reaching it means a timeout failed to apply.
+const LONG: Duration = Duration::from_mins(1);
+
+/// How soon shutdown should end when nothing needs draining.
+const PROMPT: Duration = Duration::from_secs(5);
 
 struct Running {
     address: SocketAddr,
@@ -90,6 +101,56 @@ async fn the_shutdown_timeout_ends_work_that_would_outlast_it() {
 
     let elapsed = start.elapsed();
     assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+}
+
+#[tokio::test]
+async fn a_silent_tls_handshake_does_not_delay_shutdown() {
+    let server = Server::builder()
+        .handshake_timeout(LONG)
+        .shutdown_timeout(LONG)
+        .https_listener(TcpListener::bind("127.0.0.1:0").unwrap())
+        .tls(TlsConfig::generated())
+        .build()
+        .unwrap();
+    let address = server.local_addr();
+    let (stop, stopped) = oneshot::channel::<()>();
+    let serving = tokio::spawn(server.serve(async {
+        let _ = stopped.await;
+    }));
+    let _silent = TcpStream::connect(address).await.unwrap();
+    tokio::time::sleep(SETTLE).await;
+
+    stop.send(()).unwrap();
+
+    let finished = tokio::time::timeout(PROMPT, serving).await;
+    finished.expect("shutdown waited").unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn an_idle_reflection_stream_does_not_delay_shutdown() {
+    let builder = Server::builder().body_timeout(LONG).shutdown_timeout(LONG);
+    let server = start(builder);
+    let channel = Channel::from_shared(format!("http://{}", server.address))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let request = ServerReflectionRequest {
+        host: String::new(),
+        message_request: Some(MessageRequest::ListServices(String::new())),
+    };
+    let requests = stream::iter([request]).chain(stream::pending());
+    let mut client = ServerReflectionClient::new(channel);
+    let call = client.server_reflection_info(requests).await;
+    let mut responses = call.unwrap().into_inner();
+    responses.message().await.unwrap().unwrap();
+
+    server.stop.send(()).unwrap();
+
+    let ended = responses.message().await.unwrap_err();
+    assert_eq!(ended.code(), Code::Unavailable);
+    let finished = tokio::time::timeout(PROMPT, server.serving).await;
+    finished.expect("shutdown waited").unwrap().unwrap();
 }
 
 #[tokio::test]
