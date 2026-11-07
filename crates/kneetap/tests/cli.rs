@@ -3,7 +3,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStderr, Command, Output, Stdio};
 use std::time::Duration;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_kneetap");
@@ -13,6 +13,8 @@ struct Serve {
     child: Child,
     scheme: String,
     address: String,
+    /// The server's stderr, read up to its first listener's event.
+    logs: Option<BufReader<ChildStderr>>,
 }
 
 /// Turns HTTPS off unless the test wants it, because the default port can only be held once.
@@ -30,24 +32,22 @@ impl Serve {
             .args(["serve", "--bind", bind, "--port", "0"])
             .args(tls_default(args))
             .args(args)
-            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         Self::attach(child)
     }
 
-    /// Waits for a started server to print its first URL.
+    /// Waits for a started server to log its first listener.
     fn attach(mut child: Child) -> Self {
-        let stdout = child.stdout.take().unwrap();
-        let mut line = String::new();
-        BufReader::new(stdout).read_line(&mut line).unwrap();
-        let (scheme, address) = line.trim().rsplit_once("://").unwrap();
-        let scheme = scheme.rsplit(' ').next().unwrap().to_owned();
-        let address = address.to_owned();
+        let mut logs = BufReader::new(child.stderr.take().unwrap());
+        let url = listening_url(&mut logs);
+        let (scheme, address) = url.split_once("://").unwrap();
         Self {
+            scheme: scheme.to_owned(),
+            address: address.to_owned(),
             child,
-            scheme,
-            address,
+            logs: Some(logs),
         }
     }
 
@@ -61,6 +61,19 @@ impl Drop for Serve {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Reads log lines up to the first `server.listening` event, in either format, and returns its URL.
+fn listening_url(logs: &mut impl BufRead) -> String {
+    let mut line = String::new();
+    while !line.contains("server.listening") {
+        line.clear();
+        assert_ne!(logs.read_line(&mut line).unwrap(), 0, "the server exited");
+    }
+    let start = line.find("http").unwrap();
+    let url = &line[start..];
+    let end = url.find(['"', ' ', '\n']).unwrap_or(url.len());
+    url[..end].to_owned()
 }
 
 fn kneetap(args: &[&str]) -> Output {
@@ -226,7 +239,7 @@ fn running_out_of_descriptors_does_not_stop_the_server() {
     let script = "ulimit -n 40; exec \"$0\" serve --bind 127.0.0.1 --port 0 --no-tls";
     let child = Command::new("/bin/sh")
         .args(["-c", script, BINARY])
-        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let mut server = Serve::attach(child);
@@ -282,9 +295,9 @@ fn a_signal_lets_the_request_in_progress_finish(#[case] signal: &str) {
     assert!(status.success(), "{status}");
 }
 
-/// Starts `kneetap serve --verbose` with its stderr piped, returning the process and its address.
-fn serve_verbose(args: &[&str]) -> (Child, String) {
-    let mut child = Command::new(BINARY)
+/// Starts `kneetap serve --verbose` over HTTP.
+fn serve_verbose(args: &[&str]) -> Serve {
+    let child = Command::new(BINARY)
         .args([
             "serve",
             "--verbose",
@@ -296,16 +309,10 @@ fn serve_verbose(args: &[&str]) -> (Child, String) {
         ])
         .args(args)
         .env_remove("KNEETAP_LOG")
-        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    let address = line.trim().rsplit('/').next().unwrap().to_owned();
-    (child, address)
+    Serve::attach(child)
 }
 
 /// Sends `bytes` to `address` and returns everything the server sends before closing.
@@ -317,11 +324,12 @@ fn exchange(address: &str, bytes: &[u8]) -> String {
     String::from_utf8_lossy(&response).into_owned()
 }
 
-/// Reads stderr up to the first handled request, then stops the server and returns what it read.
+/// Reads logs from after the listener events up to the first handled request, then stops the
+/// server and returns what it read.
 ///
 /// A server writes logs in the background, so they can arrive after the response.
-fn logs_through_request(child: &mut Child) -> String {
-    let stderr = BufReader::new(child.stderr.take().unwrap());
+fn logs_through_request(server: &mut Serve) -> String {
+    let stderr = server.logs.take().unwrap();
     let (sender, lines) = std::sync::mpsc::channel();
     std::thread::spawn(move || stderr.lines().try_for_each(|line| sender.send(line)));
     let mut logs = String::new();
@@ -332,8 +340,8 @@ fn logs_through_request(child: &mut Child) -> String {
             logs.push('\n');
         });
     }
-    child.kill().unwrap();
-    child.wait().unwrap();
+    server.child.kill().unwrap();
+    server.child.wait().unwrap();
     assert_eq!(outcome, Ok(()), "{logs}");
     logs
 }
@@ -342,11 +350,11 @@ const GET_BENCH: &[u8] = b"GET /bench HTTP/1.1\r\nHost: test\r\nConnection: clos
 
 #[test]
 fn verbose_logs_each_request_to_stderr() {
-    let (mut child, address) = serve_verbose(&["--log-format", "json"]);
+    let mut server = serve_verbose(&["--log-format", "json"]);
 
-    exchange(&address, GET_BENCH);
+    exchange(&server.address, GET_BENCH);
 
-    let stderr = logs_through_request(&mut child);
+    let stderr = logs_through_request(&mut server);
     let event = stderr.lines().find(|line| line.contains("request.handled"));
     let event: serde_json::Value = serde_json::from_str(event.unwrap_or("{}")).unwrap();
     assert_eq!(event["fields"]["path"], "/bench", "{stderr}");
@@ -358,59 +366,50 @@ fn an_invalid_log_filter_is_reported_as_a_log_event() {
         .args(["serve", "--log-format", "json"])
         .args(["--bind", "127.0.0.1", "--port", "0", "--no-tls"])
         .env("KNEETAP_LOG", "kneetap=nonsense")
-        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
+    stderr.read_line(&mut line).unwrap();
 
     child.kill().unwrap();
-    let output = child.wait_with_output().unwrap();
+    child.wait().unwrap();
 
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    let event: serde_json::Value = serde_json::from_str(stderr.trim()).unwrap();
+    let event: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(event["fields"]["message"], "telemetry.filter.rejected");
 }
 
 #[test]
 fn verbose_leaves_out_http2_frames() {
-    let (mut child, address) = serve_verbose(&[]);
+    let mut server = serve_verbose(&[]);
 
-    let mut stream = TcpStream::connect(&address).unwrap();
+    let mut stream = TcpStream::connect(&server.address).unwrap();
     stream
         .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\0\0\0\x04\0\0\0\0\0")
         .unwrap();
     stream.read_exact(&mut [0; 9]).unwrap();
-    exchange(&address, GET_BENCH);
+    exchange(&server.address, GET_BENCH);
 
-    let stderr = logs_through_request(&mut child);
+    let stderr = logs_through_request(&mut server);
     assert_eq!(stderr.lines().count(), 1, "{stderr}");
 }
 
 #[test]
 fn logs_written_to_a_pipe_have_no_color() {
-    let (mut child, address) = serve_verbose(&[]);
+    let mut server = serve_verbose(&[]);
 
-    exchange(&address, GET_BENCH);
+    exchange(&server.address, GET_BENCH);
 
-    let stderr = logs_through_request(&mut child);
+    let stderr = logs_through_request(&mut server);
     assert_eq!(stderr.find('\x1b'), None, "{stderr}");
 }
 
 #[cfg(unix)]
 #[test]
 fn a_closed_log_pipe_does_not_stop_the_server() {
-    let (mut child, address) = serve_verbose(&[]);
-    drop(child.stderr.take());
-    let scheme = "http".to_owned();
-    let mut server = Serve {
-        child,
-        scheme,
-        address,
-    };
+    let mut server = serve_verbose(&[]);
+    drop(server.logs.take());
 
     let response = exchange(&server.address, GET_BENCH);
 
@@ -420,19 +419,13 @@ fn a_closed_log_pipe_does_not_stop_the_server() {
 
 #[test]
 fn a_blocked_log_pipe_does_not_stall_requests() {
-    let (child, address) = serve_verbose(&[]);
-    let scheme = "http".to_owned();
-    let _server = Serve {
-        child,
-        scheme,
-        address: address.clone(),
-    };
+    let server = serve_verbose(&[]);
     let path = "x".repeat(4096);
     let request = format!("GET /{path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
 
     // Nothing reads stderr, and these lines are several times what a pipe holds.
     for _ in 0..128 {
-        let mut stream = TcpStream::connect(&address).unwrap();
+        let mut stream = TcpStream::connect(&server.address).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
@@ -520,7 +513,7 @@ fn a_broken_client_authority_never_serves_https_without_it() {
 fn the_default_bind_serves_ipv6_and_ipv4_on_one_port() {
     let child = Command::new(BINARY)
         .args(["serve", "--port", "0", "--no-tls"])
-        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let server = Serve::attach(child);
@@ -544,7 +537,7 @@ fn name_with_environment(args: &[&str]) -> String {
         .args(["serve", "--bind", "127.0.0.1", "--port", "0", "--no-tls"])
         .args(args)
         .env("KNEETAP_NAME", "from-environment")
-        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let server = Serve::attach(child);
@@ -573,7 +566,7 @@ fn first_scheme_with_environment(variables: &[(&str, &str)]) -> String {
             "0",
         ])
         .envs(variables.iter().copied())
-        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let server = Serve::attach(child);
