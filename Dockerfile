@@ -9,6 +9,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 ARG TARGETARCH
 ARG TARGETVARIANT
+# The build context leaves out `.git`, so the commit for the startup log comes in as an argument.
+ARG VERGEN_GIT_SHA
 RUN case "$TARGETARCH/$TARGETVARIANT" in \
       amd64/*) target=x86_64-unknown-linux-musl ;; \
       arm64/*) target=aarch64-unknown-linux-musl ;; \

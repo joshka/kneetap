@@ -33,3 +33,6 @@ privdrop.workspace = true
 [dev-dependencies]
 rcgen.workspace = true
 rstest.workspace = true
+
+[build-dependencies]
+vergen-gitcl.workspace = true
