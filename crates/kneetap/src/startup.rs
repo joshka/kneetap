@@ -20,8 +20,11 @@ pub struct PortChoice {
     pub default: u16,
     pub fallback: u16,
 
-    /// Recorded in server status when this listener can't start normally.
-    pub degradation: &'static str,
+    /// Recorded in server status when this listener moved to its fallback.
+    pub moved: &'static str,
+
+    /// Recorded in server status when this listener didn't start.
+    pub failed: &'static str,
 }
 
 /// Whether a listener that can't start normally stops the server.
@@ -55,13 +58,13 @@ pub fn open(
         return Err(error).with_context(|| format!("couldn't listen on port {port}"));
     }
     tracing::warn!(%error, port, "listener.bind.failed");
-    degradations.push(choice.degradation.to_owned());
     let may_fall_back = choice.explicit.is_none()
         && matches!(
             error.kind(),
             io::ErrorKind::PermissionDenied | io::ErrorKind::AddrInUse
         );
     if !may_fall_back {
+        degradations.push(choice.failed.to_owned());
         return Ok(None);
     }
     let fallback = bind_any(bind, choice.fallback)
@@ -69,6 +72,12 @@ pub fn open(
             tracing::warn!(%error, port = choice.fallback, "listener.fallback.failed");
         })
         .ok();
+    let degradation = if fallback.is_some() {
+        choice.moved
+    } else {
+        choice.failed
+    };
+    degradations.push(degradation.to_owned());
     Ok(fallback)
 }
 
@@ -125,7 +134,8 @@ mod tests {
             explicit,
             default,
             fallback,
-            degradation: "http_bind_failed",
+            moved: "http_port_moved",
+            failed: "http_bind_failed",
         }
     }
 
@@ -143,6 +153,21 @@ mod tests {
 
         let port = listener.unwrap().unwrap().local_addr().unwrap().port();
         assert_eq!(port, free);
+        assert_eq!(degradations, ["http_port_moved"]);
+    }
+
+    #[test]
+    fn a_listener_without_a_usable_fallback_is_reported_as_off() {
+        let (_held, taken, _free) = taken_and_free();
+        let mut degradations = Vec::new();
+
+        let choice = choice(None, taken, taken);
+        let listener = open(LOOPBACK, choice, Strictness::Lenient, &mut degradations).unwrap();
+
+        assert_eq!(
+            listener.map(|listener| listener.local_addr().unwrap()),
+            None
+        );
         assert_eq!(degradations, ["http_bind_failed"]);
     }
 

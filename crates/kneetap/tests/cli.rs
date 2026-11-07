@@ -593,6 +593,29 @@ fn flags_set_in_the_environment_can_be_on_or_off(
 }
 
 #[test]
+fn tls_files_are_kept_when_the_environment_leaves_tls_on() {
+    let variables = [
+        ("KNEETAP_NO_TLS", "false"),
+        ("KNEETAP_CERT", "/missing"),
+        ("KNEETAP_KEY", "/missing"),
+    ];
+
+    assert_eq!(first_scheme_with_environment(&variables), "http");
+}
+
+#[test]
+fn tls_files_are_refused_when_the_environment_turns_tls_off() {
+    let output = Command::new(BINARY)
+        .args(["serve", "--port", "0"])
+        .envs([("KNEETAP_NO_TLS", "true"), ("KNEETAP_CACERT", "/missing")])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+}
+
+#[test]
 fn turning_off_both_listeners_is_an_error() {
     let output = kneetap(&["serve", "--no-http", "--no-tls"]);
 
