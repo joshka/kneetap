@@ -1016,6 +1016,7 @@ dependencies = [
  "kneetap-client",
  "kneetap-server",
  "privdrop",
+ "rcgen",
  "rstest",
  "serde_json",
  "socket2",
@@ -1042,6 +1043,7 @@ name = "kneetap-client"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "kneetap-api",
  "kneetap-server",
  "reqwest",
@@ -1049,6 +1051,7 @@ dependencies = [
  "rustls",
  "serde_json",
  "tokio",
+ "tokio-rustls",
  "webpki-roots",
 ]
 

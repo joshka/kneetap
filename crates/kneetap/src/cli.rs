@@ -215,6 +215,15 @@ struct Healthcheck {
     #[arg(long, env = "KNEETAP_NO_TLS", value_parser = BoolishValueParser::new())]
     no_tls: bool,
 
+    /// Name of the local server, as given to `serve`; other servers are ignored
+    #[arg(long, env = "KNEETAP_NAME")]
+    name: Option<String>,
+
+    /// Client authorities of the local server, as given to `serve`; its refusal to talk without a
+    /// client certificate then counts as success, though it can't show the health status
+    #[arg(long, env = "KNEETAP_CACERT")]
+    server_cacert: Option<PathBuf>,
+
     /// Longest the whole check may take
     #[arg(long, default_value = "5s", value_parser = humantime::parse_duration)]
     timeout: Duration,
@@ -282,17 +291,31 @@ async fn run_healthcheck(check: Healthcheck) -> Result<()> {
     let probe = async {
         match &check.url {
             Some(url) => client.check_health(url).await,
-            None => {
-                client
-                    .discover_health(&Endpoint::discover(&check).urls())
-                    .await
-            }
+            None => discover(&client, &Endpoint::discover(&check)).await,
         }
     };
     tokio::time::timeout(check.timeout, probe)
         .await
         .context("health check timed out")??;
     Ok(())
+}
+
+/// Checks a local server. One that requires client certificates may refuse us, as an image's
+/// default health check has none, and that's the only answer such a server can give.
+async fn discover(client: &Client, endpoint: &Endpoint) -> Result<(), kneetap_client::Error> {
+    let name = endpoint.name.as_deref();
+    let error = match client.discover_health(&endpoint.urls(), name).await {
+        Err(error) if endpoint.requires_client_auth && error.unhealthy_status().is_none() => error,
+        result => return result,
+    };
+    if client
+        .requires_client_certificate(&endpoint.tls_addresses())
+        .await
+    {
+        tracing::warn!("healthcheck.status.unverified");
+        return Ok(());
+    }
+    Err(error)
 }
 
 /// Where a local server should be listening.
@@ -303,6 +326,8 @@ struct Endpoint {
     tls_port: Option<u16>,
     no_http: bool,
     no_tls: bool,
+    name: Option<String>,
+    requires_client_auth: bool,
 }
 
 impl Endpoint {
@@ -314,11 +339,20 @@ impl Endpoint {
             tls_port: check.tls_port,
             no_http: check.no_http,
             no_tls: check.no_tls,
+            name: check.name.clone(),
+            requires_client_auth: check.server_cacert.is_some(),
         };
-        if endpoint.is_unset() {
-            return container_endpoint().unwrap_or(endpoint);
+        if !endpoint.is_unset() {
+            return endpoint;
         }
-        endpoint
+        let Some(container) = container_endpoint() else {
+            return endpoint;
+        };
+        Self {
+            name: endpoint.name.or(container.name),
+            requires_client_auth: endpoint.requires_client_auth || container.requires_client_auth,
+            ..container
+        }
     }
 
     /// Returns whether the command was told nothing, so it should look for a running server
@@ -349,6 +383,20 @@ impl Endpoint {
             _ => http.chain(https).collect(),
         }
     }
+
+    /// Lists where HTTPS may be listening, for checks that can't go through HTTP.
+    fn tls_addresses(&self) -> Vec<SocketAddr> {
+        if self.no_tls {
+            return Vec::new();
+        }
+        let ports = self
+            .tls_port
+            .map_or(vec![DEFAULT_TLS_PORT, FALLBACK_TLS_PORT], |port| vec![port]);
+        ports
+            .into_iter()
+            .map(|port| probe_target(self.bind, port))
+            .collect()
+    }
 }
 
 /// Reads PID 1's arguments, because `docker exec` and `HEALTHCHECK` don't inherit them.
@@ -368,6 +416,8 @@ fn container_endpoint() -> Option<Endpoint> {
         tls_port: serve.tls_port,
         no_http: serve.no_http,
         no_tls: serve.no_tls,
+        name: serve.name,
+        requires_client_auth: serve.cacert.is_some(),
     })
 }
 
@@ -597,6 +647,8 @@ mod tests {
             tls_port: None,
             no_http,
             no_tls,
+            name: None,
+            requires_client_auth: false,
         };
 
         assert_eq!(endpoint.urls(), urls);

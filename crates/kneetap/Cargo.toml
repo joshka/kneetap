@@ -29,4 +29,5 @@ tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt"
 privdrop.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
 rstest.workspace = true

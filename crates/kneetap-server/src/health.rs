@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::http::request::Parts;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
-use kneetap_api::{HEALTH_HEADER, HEALTH_MARKER};
+use kneetap_api::{HEALTH_HEADER, HEALTH_MARKER, HEALTH_NAME_HEADER};
 use tokio::sync::Mutex;
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
@@ -24,6 +24,9 @@ const GRPC_SERVICES: [&str; 2] = ["", "kneetap.v1.Reporter"];
 pub struct Health {
     status: AtomicU16,
     grpc: HealthReporter,
+
+    /// The server's name as a header, absent if it has none or the name has control characters.
+    name: Option<HeaderValue>,
 
     /// Serializes changes, so that an update can't undo the status set for draining.
     update: Mutex<Update>,
@@ -43,10 +46,11 @@ impl fmt::Debug for Health {
 
 impl Health {
     /// Starts healthy, publishing the status through `grpc` as well.
-    pub async fn new(grpc: HealthReporter) -> Self {
+    pub async fn new(grpc: HealthReporter, name: Option<&str>) -> Self {
         let health = Self {
             status: AtomicU16::new(StatusCode::OK.as_u16()),
             grpc,
+            name: name.and_then(|name| HeaderValue::from_bytes(name.as_bytes()).ok()),
             update: Mutex::default(),
         };
         health.publish(ServingStatus::Serving).await;
@@ -111,6 +115,11 @@ pub async fn respond(
         HeaderName::from_static(HEALTH_HEADER),
         HeaderValue::from_static(HEALTH_MARKER),
     );
+    if let Some(name) = health.name.clone() {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static(HEALTH_NAME_HEADER), name);
+    }
     // A cached status would hide the failover this endpoint exists to test.
     response
         .headers_mut()
@@ -151,7 +160,7 @@ mod tests {
     const TIMEOUT: Duration = Duration::from_secs(1);
 
     async fn health() -> Health {
-        Health::new(tonic_health::server::health_reporter().0).await
+        Health::new(tonic_health::server::health_reporter().0, None).await
     }
 
     async fn post(health: &Health, content_type: &str, body: &'static str) -> StatusCode {
@@ -190,6 +199,16 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()[HEALTH_HEADER], HEALTH_MARKER);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[tokio::test]
+    async fn a_named_server_gives_its_name() {
+        let reporter = tonic_health::server::health_reporter().0;
+        let health = Health::new(reporter, Some("blue")).await;
+
+        let response = get(&health).await;
+
+        assert_eq!(response.headers()[HEALTH_NAME_HEADER], "blue");
     }
 
     #[tokio::test]

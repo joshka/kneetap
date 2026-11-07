@@ -38,7 +38,9 @@ curl -H 'content-type: application/json' -d 503 localhost:8080/health
 
 `kt` is a shorter name for the same program. From another machine,
 `kneetap report http://server:8080` prints a report, and `kneetap healthcheck` exits successfully
-only if a local server is healthy.
+only if a local server is healthy. It tries the default ports at once, so with several servers on a
+host, `--name` or `KNEETAP_NAME` picks the one to check. Without a name, every server it finds must
+be healthy.
 
 gRPC shares the same port, with the `kneetap.v1.Reporter` service, standard health checks, and
 reflection, so `grpcurl -plaintext localhost:8080 kneetap.v1.Reporter/GetReport` works. Paths under
@@ -110,8 +112,10 @@ docker build -t kneetap .
 docker run --read-only -p 8080:80 -p 8443:443 kneetap --name blue
 ```
 
-A server started with `--no-http --cacert` only answers clients with a certificate, so its health
-check needs one too. Override it in exec form, because the image has no shell. In Compose:
+A server started with `--no-http --cacert` only answers clients with a certificate. The default
+check then passes on the server's demand for one, which shows that something is up on its port, but
+not its name or health status. To see those, give the check a certificate. Override it in exec form,
+because the image has no shell. In Compose:
 
 ```yaml
 healthcheck:

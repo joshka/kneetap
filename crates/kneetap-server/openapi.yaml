@@ -264,6 +264,10 @@ components:
           schema:
             type: string
             const: '1'
+        x-kneetap-name:
+          description: The server's name, if it has one.
+          schema:
+            type: string
     InvalidParameter:
       description: A query parameter this path reads was invalid or repeated.
       content:
