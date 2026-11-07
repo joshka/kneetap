@@ -27,7 +27,7 @@ curl localhost:8080/anything
 | `/data?size=10&unit=MiB`       | Generated data, with range requests and `?attachment=true`      |
 | `/echo`                        | A WebSocket that echoes each message                            |
 | `/health`                      | The current health status, which `POST` changes                 |
-| Anything else                  | The report as text, or JSON if the client prefers it            |
+| Anything else                  | The report as text, or as JSON or a web page if the client asks |
 
 To make a replica fail its health checks, for example while testing load balancer failover:
 

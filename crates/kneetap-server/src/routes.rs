@@ -16,7 +16,7 @@ use tokio_util::task::TaskTracker;
 use crate::health::{self, Health};
 use crate::identity::Identity;
 use crate::status::Status;
-use crate::{body, data, echo, report};
+use crate::{body, data, echo, html, report};
 
 /// The description of this API, served at `/openapi.yaml`.
 const OPENAPI: &str = include_str!("../openapi.yaml");
@@ -238,13 +238,22 @@ fn report_response(
         .iter()
         .filter_map(|value| value.to_str().ok())
         .join(",");
-    let mut response = if is_api || prefers_json(&accept) {
-        let json = serde_json::to_vec(&report).expect("a report only holds strings");
-        with_type(StatusCode::OK, "application/json", json.into())
+    let format = if is_api {
+        Format::Json
     } else {
-        let mut output = report.to_string().into_bytes();
-        output.extend_from_slice(bytes);
-        with_type(StatusCode::OK, TEXT, output.into())
+        Format::from_accept(&accept)
+    };
+    let mut response = match format {
+        Format::Json => {
+            let json = serde_json::to_vec(&report).expect("a report only holds strings");
+            with_type(StatusCode::OK, "application/json", json.into())
+        }
+        Format::Html => html_response(&report),
+        Format::Text => {
+            let mut output = report.to_string().into_bytes();
+            output.extend_from_slice(bytes);
+            with_type(StatusCode::OK, TEXT, output.into())
+        }
     };
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -254,13 +263,54 @@ fn report_response(
     response
 }
 
-/// Selects JSON only when the client ranks it above text.
+/// Serves the report page, which echoes untrusted input, with headers that stop browsers running
+/// or reinterpreting it.
 ///
-/// This never refuses a request: the server's job is to report it, whatever the client accepts.
-fn prefers_json(accept: &str) -> bool {
-    let (specificity, json) = ranking(accept, "application", "json");
-    let (_, text) = ranking(accept, "text", "plain");
-    specificity == 3 && json > 0.0 && json > text
+/// Without random bytes for a script nonce, the page is still served, just without its script.
+fn html_response(report: &kneetap_api::Report) -> Response {
+    let nonce = getrandom::u64()
+        .inspect_err(|error| tracing::warn!(%error, "html.nonce.unavailable"))
+        .ok()
+        .map(|nonce| format!("{nonce:016x}"));
+    let page = html::render(report, nonce.as_deref());
+    let mut response = Response::new(Body::from(page));
+    let headers = response.headers_mut();
+    for (name, value) in html::headers(nonce.as_deref()) {
+        let value = HeaderValue::from_str(&value).expect("page headers are ASCII");
+        headers.insert(header::HeaderName::from_static(name), value);
+    }
+    response
+}
+
+/// How a report is written for the client that asked for it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Format {
+    Text,
+    Json,
+    Html,
+}
+
+impl Format {
+    /// Picks JSON or HTML only when the client names it and ranks it above text.
+    ///
+    /// Terminal clients such as curl send `*/*` and get text, while browsers name `text/html`. This
+    /// never refuses a request: the server's job is to report it, whatever the client accepts.
+    fn from_accept(accept: &str) -> Self {
+        let (_, text) = ranking(accept, "text", "plain");
+        let named = |kind, subtype| match ranking(accept, kind, subtype) {
+            (3, quality) if quality > text => quality,
+            _ => 0.0,
+        };
+        let json = named("application", "json");
+        let html = named("text", "html");
+        if json > 0.0 && json >= html {
+            Self::Json
+        } else if html > 0.0 {
+            Self::Html
+        } else {
+            Self::Text
+        }
+    }
 }
 
 /// Finds the most specific `Accept` entry matching a media type, as `(specificity, quality)`.
@@ -714,14 +764,41 @@ mod tests {
     }
 
     #[rstest]
-    #[case("application/json;q=0.8, text/plain;q=0.2", true)]
-    #[case("", false)]
-    #[case("*/*", false)]
-    #[case("application/json,text/plain", false)]
-    #[case("application/xml", false)]
-    #[case("text/plain;q=0,*/*;q=0", false)]
-    fn json_requires_an_explicit_preference(#[case] accept: &str, #[case] json: bool) {
-        assert_eq!(prefers_json(accept), json);
+    #[case("application/json;q=0.8, text/plain;q=0.2", Format::Json)]
+    #[case("", Format::Text)]
+    #[case("*/*", Format::Text)]
+    #[case("application/json,text/plain", Format::Text)]
+    #[case("application/xml", Format::Text)]
+    #[case("text/plain;q=0,*/*;q=0", Format::Text)]
+    #[case(
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Format::Html
+    )]
+    #[case("text/html,text/plain", Format::Text)]
+    #[case("text/*", Format::Text)]
+    #[case("application/json, text/html;q=0.9", Format::Json)]
+    fn json_and_html_require_an_explicit_preference(#[case] accept: &str, #[case] format: Format) {
+        assert_eq!(Format::from_accept(accept), format);
+    }
+
+    #[tokio::test]
+    async fn browsers_get_a_page_that_runs_only_its_own_script() {
+        let mut request = request("GET", "/x", "");
+        let accept = HeaderValue::from_static("text/html,*/*;q=0.8");
+        request.headers_mut().insert(header::ACCEPT, accept);
+
+        let response = send(request).await;
+
+        let headers = response.headers();
+        let policy = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        let scripts = policy
+            .split("; ")
+            .find(|directive| directive.starts_with("script-src"));
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+        assert_eq!(
+            scripts.map(str::len),
+            Some("script-src 'nonce-'".len() + 16)
+        );
     }
 
     #[rstest]

@@ -12,9 +12,9 @@ paths:
       operationId: getReport
       summary: Report this request
       description: >-
-        Returns text, ending with the request body, unless the client ranks JSON above text. Any
-        other path behaves the same way, accepts any method except CONNECT, and ignores its query
-        parameters.
+        Returns text, ending with the request body, unless the client names JSON or HTML and ranks
+        it above text. Browsers get the HTML page. Any other path behaves the same way, accepts any
+        method except CONNECT, and ignores its query parameters.
       parameters:
         - $ref: '#/components/parameters/Wait'
         - $ref: '#/components/parameters/Env'
@@ -23,6 +23,9 @@ paths:
           description: The report.
           content:
             text/plain:
+              schema:
+                type: string
+            text/html:
               schema:
                 type: string
             application/json:
@@ -55,6 +58,9 @@ paths:
           description: The report.
           content:
             text/plain:
+              schema:
+                type: string
+            text/html:
               schema:
                 type: string
             application/json:
