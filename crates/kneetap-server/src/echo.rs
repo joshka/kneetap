@@ -39,6 +39,8 @@ pub async fn upgrade(context: &Context, parts: &mut Parts) -> Result<Response, R
 
 /// Refuses browser pages from other sites, which would otherwise reach this server through a
 /// visitor's network. Clients that send no `Origin` aren't browsers, so the check doesn't apply.
+///
+/// DNS rebinding gets past this, because a rebound page's origin matches the `Host` it sends.
 fn check_origin(parts: &Parts) -> Result<(), Rejection> {
     let Some(origin) = parts.headers.get(header::ORIGIN) else {
         return Ok(());
@@ -83,7 +85,9 @@ async fn echo(mut socket: WebSocket, stop: CancellationToken, close_timeout: Dur
     loop {
         let received = tokio::select! {
             received = socket.recv() => received,
-            () = stop.cancelled() => return go_away(socket, close_timeout).await,
+            () = stop.cancelled() => {
+                return close(socket, close_code::AWAY, "server shutting down", close_timeout).await;
+            }
         };
         match received {
             Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
@@ -93,20 +97,33 @@ async fn echo(mut socket: WebSocket, stop: CancellationToken, close_timeout: Dur
             }
             // The next `recv` flushes the queued close reply, then ends the stream.
             Some(Ok(Message::Close(_) | Message::Ping(_) | Message::Pong(_))) => {}
-            Some(Err(_)) | None => return,
+            Some(Err(error)) => return end_after_error(socket, error, close_timeout).await,
+            None => return,
         }
     }
 }
 
-/// Tells the client the server is shutting down, then waits up to `timeout` for its close reply.
+/// Closes with 1009 after an oversized message (RFC 6455 section 7.4.1), so the client learns why.
+///
+/// Other read errors leave nothing to say. The downcast needs `axum`'s own `tungstenite` version,
+/// and `oversized_messages_close_with_a_reason` fails if the two drift apart.
+async fn end_after_error(socket: WebSocket, error: axum::Error, timeout: Duration) {
+    let error = error.into_inner();
+    let error = error.downcast_ref::<tungstenite::Error>();
+    if matches!(error, Some(tungstenite::Error::Capacity(_))) {
+        close(socket, close_code::SIZE, "message too big", timeout).await;
+    }
+}
+
+/// Tells the client why the connection is ending, then waits up to `timeout` for its close reply.
 ///
 /// A client that can't be told is already gone.
-async fn go_away(mut socket: WebSocket, timeout: Duration) {
-    let close = CloseFrame {
-        code: close_code::AWAY,
-        reason: "server shutting down".into(),
+async fn close(mut socket: WebSocket, code: u16, reason: &'static str, timeout: Duration) {
+    let frame = CloseFrame {
+        code,
+        reason: reason.into(),
     };
-    if socket.send(Message::Close(Some(close))).await.is_err() {
+    if socket.send(Message::Close(Some(frame))).await.is_err() {
         return;
     }
     let replied = async { while let Some(Ok(_)) = socket.recv().await {} };

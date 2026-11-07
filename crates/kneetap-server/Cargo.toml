@@ -38,10 +38,12 @@ tonic-health.workspace = true
 tonic-reflection = { workspace = true, features = ["server"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true, features = ["std"] }
+tungstenite.workspace = true
 url.workspace = true
 x509-parser.workspace = true
 
 [dev-dependencies]
+futures-util = { workspace = true, features = ["sink"] }
 h2.workspace = true
 hyper = { workspace = true, features = ["client"] }
 insta = { workspace = true, features = ["json"] }
@@ -52,6 +54,5 @@ rstest.workspace = true
 serde-saphyr.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util"] }
-futures-util = { workspace = true, features = ["sink"] }
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 tonic = { workspace = true, features = ["channel"] }
