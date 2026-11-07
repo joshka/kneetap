@@ -1,5 +1,5 @@
 # Cross-build on the build host so ARMv7 never needs an unsupported Rust compiler host image.
-FROM --platform=$BUILDPLATFORM rust:1.99-bookworm AS build
+FROM --platform=$BUILDPLATFORM rust:1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS build
 RUN apt-get update && apt-get install -y --no-install-recommends python3-pip \
     && pip3 install --break-system-packages ziglang==0.17.0 \
     && cargo install cargo-zigbuild --version 0.24.1 --locked \
