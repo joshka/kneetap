@@ -16,7 +16,7 @@ mod report;
 
 pub use report::{
     BodyEncoding, CertificateSource, ClientVerification, ConnectionReport, Report, ServerStatus,
-    TlsReport,
+    TlsReport, is_format_control,
 };
 
 /// Response header that identifies a kneetap `/health` endpoint.

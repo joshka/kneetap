@@ -1,4 +1,6 @@
-use kneetap_api::{BodyEncoding, CertificateSource, Report};
+use std::fmt::Write;
+
+use kneetap_api::{BodyEncoding, CertificateSource, Report, is_format_control};
 
 /// Headers the command leaves out: curl sets them itself, they'd change what comes back, or, for
 /// `cookie`, a browser on a shared host such as localhost fills them with other sites' cookies.
@@ -60,8 +62,30 @@ pub fn command(report: &Report) -> String {
 }
 
 /// Quotes a value for a POSIX shell, so it's passed as one argument with nothing expanded.
+///
+/// A value with an invisible format control uses bash and zsh `$'…'` quoting instead, which spells
+/// the control as its UTF-8 bytes, so the command shows it and sends it in any locale.
 fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
+    if !value.chars().any(is_format_control) {
+        return format!("'{}'", value.replace('\'', r"'\''"));
+    }
+    let mut quoted = String::from("$'");
+    for character in value.chars() {
+        match character {
+            '\\' | '\'' => {
+                quoted.push('\\');
+                quoted.push(character);
+            }
+            _ if is_format_control(character) => {
+                for byte in character.encode_utf8(&mut [0; 4]).bytes() {
+                    let _ = write!(quoted, "\\x{byte:02x}");
+                }
+            }
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 #[cfg(test)]
@@ -150,5 +174,10 @@ mod tests {
           --data-raw '{"a":1}' \
           'https://example.test/a?b=c'
         "#);
+    }
+
+    #[test]
+    fn a_value_with_a_format_control_spells_its_bytes() {
+        assert_eq!(quote("it's\\\u{202E}"), r"$'it\'s\\\xe2\x80\xae'");
     }
 }
