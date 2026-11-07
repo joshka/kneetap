@@ -2,14 +2,13 @@
 
 kneetap is a small server that reports which instance answered a request and what that request
 looked like when it arrived. Put it behind a proxy, load balancer, or service mesh to see what
-actually reaches a backend.
+reaches a backend.
 
-- **Many protocols, same ports:** reports over HTTP/1.1, HTTP/2, TLS with client certificates, and
-  gRPC, which leaves out TLS details, plus a WebSocket echo.
-- **Safe to leave running:** connections and requests are bounded, it drops root, and the
-  environment stays private unless you opt in.
-- **Starts whatever happens:** it works around bad ports and certificates, and says what it did.
-- **Small:** a single binary, a `scratch` image of about 7 MB, or a library for your own tests.
+It reports over HTTP/1.1, HTTP/2, TLS with client certificates, and gRPC on the same ports, and
+echoes WebSocket messages. Connections and requests are bounded, it drops root, and it keeps the
+environment private unless you opt in, so it's safe to leave running. It starts even when its ports
+or certificates are wrong, and says what it worked around. It ships as a single binary, a `scratch`
+image of about 7 MB, or a library for your own tests.
 
 ## Try it
 
@@ -18,17 +17,17 @@ cargo run -p kneetap -- serve --port 8080 --no-tls
 curl localhost:8080/anything
 ```
 
-| Path | Response |
-| --- | --- |
-| `/api` | The report as JSON |
-| `/bench` | `1`, for load testing |
-| `/openapi.yaml` | A description of this API |
-| `/` or `/api` with `?wait=2s` | The report, after a delay |
+| Path                           | Response                                                        |
+| ------------------------------ | --------------------------------------------------------------- |
+| `/api`                         | The report as JSON                                              |
+| `/bench`                       | `1`, for load testing                                           |
+| `/openapi.yaml`                | A description of this API                                       |
+| `/` or `/api` with `?wait=2s`  | The report, after a delay                                       |
 | `/` or `/api` with `?env=true` | The report with environment variables, if `--enable-env` is set |
-| `/data?size=10&unit=MiB` | Generated data, with range requests and `?attachment=true` |
-| `/echo` | A WebSocket that echoes each message |
-| `/health` | The current health status, which `POST` changes |
-| Anything else | The report as text, or JSON if the client prefers it |
+| `/data?size=10&unit=MiB`       | Generated data, with range requests and `?attachment=true`      |
+| `/echo`                        | A WebSocket that echoes each message                            |
+| `/health`                      | The current health status, which `POST` changes                 |
+| Anything else                  | The report as text, or JSON if the client prefers it            |
 
 To make a replica fail its health checks, for example while testing load balancer failover:
 
@@ -77,29 +76,30 @@ nothing to report for that long, when it ends as `UNAVAILABLE` so the client can
 HTTP/2 connection closes when a response can't send its next chunk within the blocked write timeout,
 even if the client still answers pings. Run `kneetap serve --help` to change any of these.
 
-| Limit | Default |
-| --- | --- |
-| Connections | 1024 |
-| Requests in progress | 1024 |
-| TLS handshake, or first bytes and headers | 10 seconds each |
-| Reading a request body, or a blocked write | 30 seconds each |
-| A connection with no requests, or a quiet WebSocket or gRPC stream | 60 seconds |
-| Request body and WebSocket message | 1 MiB each |
-| `/data` response | 10 GB |
-| `?wait=` delay | 5 minutes |
+| Limit                                                              | Default         |
+| ------------------------------------------------------------------ | --------------- |
+| Connections                                                        | 1024            |
+| Requests in progress                                               | 1024            |
+| TLS handshake, or first bytes and headers                          | 10 seconds each |
+| Reading a request body, or a blocked write                         | 30 seconds each |
+| A connection with no requests, or a quiet WebSocket or gRPC stream | 60 seconds      |
+| Request body and WebSocket message                                 | 1 MiB each      |
+| `/data` response                                                   | 10 GB           |
+| `?wait=` delay                                                     | 5 minutes       |
 
 ## Startup
 
-kneetap tries to start whatever happens, because it's often deployed to find out what's wrong.
-Reports list what it worked around under `serverStatus.degradations`: `http_port_moved` means HTTP
-is up on its fallback port, and `http_bind_failed` means HTTP is off. HTTPS has the same pair.
+kneetap tries to start even when misconfigured, because it's often deployed to find out what's
+wrong. Reports list what it worked around under `serverStatus.degradations`: `http_port_moved`
+means HTTP is up on its fallback port, and `http_bind_failed` means HTTP is off. HTTPS has the same
+pair.
 
-| Problem | What happens |
-| --- | --- |
-| Port 80 or 443 can't be bound | Moves to 8080 or 8443, unless you set the port yourself |
-| A listener can't start | The other one serves |
-| The certificate or key is unusable | Generates a certificate |
-| The `--cacert` bundle is unusable | HTTPS stays off, and it never accepts any client instead |
+| Problem                            | What happens                                             |
+| ---------------------------------- | -------------------------------------------------------- |
+| Port 80 or 443 can't be bound      | Moves to 8080 or 8443, unless you set the port yourself  |
+| A listener can't start             | The other one serves                                     |
+| The certificate or key is unusable | Generates a certificate                                  |
+| The `--cacert` bundle is unusable  | HTTPS stays off, and it never accepts any client instead |
 
 `--strict` exits on any of these. By default kneetap listens on all IPv6 and IPv4 addresses. Every
 `serve` option except `--puid` and `--pgid` can also be set with a `KNEETAP_` variable, such as
@@ -116,9 +116,9 @@ docker run --read-only -p 8080:80 -p 8443:443 kneetap --name blue
 ```
 
 A server started with `--no-http --cacert` only answers clients with a certificate. The default
-check then passes on the server's demand for one, which shows that something is up on its port, but
-not its name or health status. To see those, give the check a certificate. Override it in exec form,
-because the image has no shell. In Compose:
+check then passes as soon as the server asks for a certificate. That shows something is listening,
+but not its name or health status. To see those, give the check a certificate. Override it in exec
+form, because the image has no shell. In Compose:
 
 ```yaml
 healthcheck:
@@ -150,14 +150,8 @@ exits at once.
 ## Related projects
 
 - [whoami](https://github.com/traefik/whoami) is the closest project, and inspired this one. kneetap
-  covers what it offers and adds more TLS detail, limits, and degraded startup. Moving to kneetap
-  means using `--port` rather than `-port`, a separate `--tls-port` for HTTPS, `--enable-env` for
-  `?env=true`, and JSON for `/health` updates. `KNEETAP_PORT` and `KNEETAP_NAME` replace
-  `WHOAMI_PORT_NUMBER` and `WHOAMI_NAME`. gRPC clients call `kneetap.v1.Reporter` rather than
-  `whoami.Whoami`, with `GetReport` and `Ping` in place of `Whoami` and `Bench`. In `/api` reports,
-  `addresses`, `target`, and an `environment` array replace `ip`, `url`, and the `environ` object.
-  Invalid parameters return `400`, and header names are lowercase. A TLS-only whoami needs
-  `--no-http --tls-port`, because `--port` alone leaves plain HTTP on without client certificates.
+  covers what it offers and adds more TLS detail, limits, and degraded startup. See
+  [Moving from whoami](#moving-from-whoami).
 - [go-httpbin](https://github.com/mccutchen/go-httpbin) is a port of httpbin, with a broad set of
   endpoints for testing HTTP clients.
 - [http-https-echo](https://github.com/mendhak/docker-http-https-echo) echoes requests as JSON and
@@ -166,6 +160,22 @@ exits at once.
   events for testing proxies.
 - [Echo-Server](https://github.com/Ealenn/Echo-Server) lets clients control its responses through
   headers and query parameters.
+
+## Moving from whoami
+
+| With whoami                                        | With kneetap                                      |
+| -------------------------------------------------- | ------------------------------------------------- |
+| `-port`                                            | `--port`                                          |
+| HTTPS                                              | A separate `--tls-port`                           |
+| `?env=true`                                        | `?env=true`, once `--enable-env` is set           |
+| `/health` updates                                  | `/health` updates as JSON                         |
+| `WHOAMI_PORT_NUMBER`, `WHOAMI_NAME`                | `KNEETAP_PORT`, `KNEETAP_NAME`                    |
+| gRPC `whoami.Whoami` with `Whoami` and `Bench`     | `kneetap.v1.Reporter` with `GetReport` and `Ping` |
+| `/api` fields `ip`, `url`, and an `environ` object | `addresses`, `target`, and an `environment` array |
+
+kneetap also returns `400` for invalid parameters and lowercases header names. For a TLS-only
+server, use `--no-http --tls-port`: `--port` alone leaves plain HTTP on, without client
+certificates.
 
 ## Learn more
 
