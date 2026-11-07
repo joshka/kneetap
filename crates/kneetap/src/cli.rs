@@ -28,16 +28,26 @@ const STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Green.on_default().bold())
     .placeholder(AnsiColor::Cyan.on_default());
 
+/// Help headings, which clap lists in the order the options first use them.
+const LISTENERS: &str = "Listeners";
+const TLS: &str = "TLS";
+const ENDPOINTS: &str = "Endpoints";
+const LIMITS: &str = "Limits";
+const TIMEOUTS: &str = "Timeouts";
+const STARTUP: &str = "Startup";
+const LOCAL_SERVER: &str = "Local server";
+const LOGGING: &str = "Logging";
+
 /// Command-line arguments.
 #[derive(Debug, Parser)]
 #[command(version, about, styles = STYLES)]
 struct Cli {
     /// Log debug messages; `KNEETAP_LOG` takes priority
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = LOGGING)]
     verbose: bool,
 
     /// How to write log messages
-    #[arg(long, global = true, value_enum, default_value_t)]
+    #[arg(long, global = true, value_enum, default_value_t, help_heading = LOGGING)]
     log_format: LogFormat,
 
     #[command(subcommand)]
@@ -64,94 +74,117 @@ enum Command {
 struct Serve {
     /// Address shared by all listeners [default: all IPv6 and IPv4 addresses]
     #[arg(long, env = "KNEETAP_BIND")]
+    #[arg(help_heading = LISTENERS)]
     bind: Option<IpAddr>,
 
     /// HTTP port [default: 80, or 8080 if 80 can't be bound]
     #[arg(long, env = "KNEETAP_PORT")]
+    #[arg(help_heading = LISTENERS)]
     port: Option<u16>,
-
-    /// Name included in reports
-    #[arg(long, env = "KNEETAP_NAME")]
-    name: Option<String>,
-
-    /// Allow `?env=true` to return the server's environment variables
-    #[arg(long, env = "KNEETAP_ENABLE_ENV", value_parser = BoolishValueParser::new())]
-    enable_env: bool,
-
-    /// Permit browsers to connect to `/echo` from any origin
-    #[arg(long, env = "KNEETAP_ALLOW_ANY_WS_ORIGIN", value_parser = BoolishValueParser::new())]
-    allow_any_ws_origin: bool,
 
     /// HTTPS port [default: 443, or 8443 if 443 can't be bound]
     #[arg(long, env = "KNEETAP_TLS_PORT")]
+    #[arg(help_heading = LISTENERS)]
     tls_port: Option<u16>,
 
     /// Don't serve plain HTTP
     #[arg(long, env = "KNEETAP_NO_HTTP", value_parser = BoolishValueParser::new())]
+    #[arg(help_heading = LISTENERS)]
     no_http: bool,
 
     /// Don't serve HTTPS, which can't be combined with TLS files
     #[arg(long, env = "KNEETAP_NO_TLS", value_parser = BoolishValueParser::new())]
+    #[arg(help_heading = LISTENERS)]
     no_tls: bool,
-
-    /// Exit at startup on any failure instead of continuing with what works
-    #[arg(long, env = "KNEETAP_STRICT", value_parser = BoolishValueParser::new())]
-    strict: bool,
 
     /// TLS certificate chain in PEM format, instead of a generated one
     #[arg(long, env = "KNEETAP_CERT", requires = "key")]
+    #[arg(help_heading = TLS)]
     cert: Option<PathBuf>,
 
     /// TLS private key in PEM format
     #[arg(long, env = "KNEETAP_KEY", requires = "cert")]
+    #[arg(help_heading = TLS)]
     key: Option<PathBuf>,
 
     /// Authorities in PEM format; HTTPS clients must present a certificate they signed
     #[arg(long, env = "KNEETAP_CACERT")]
+    #[arg(help_heading = TLS)]
     cacert: Option<PathBuf>,
 
     /// How often to check TLS files for changes; `0s` turns this off
     #[arg(long, env = "KNEETAP_TLS_RELOAD_INTERVAL", default_value = "30s", value_parser = humantime::parse_duration)]
+    #[arg(help_heading = TLS)]
     tls_reload_interval: Duration,
+
+    /// Name included in reports
+    #[arg(long, env = "KNEETAP_NAME")]
+    #[arg(help_heading = ENDPOINTS)]
+    name: Option<String>,
+
+    /// Allow `?env=true` to return the server's environment variables
+    #[arg(long, env = "KNEETAP_ENABLE_ENV", value_parser = BoolishValueParser::new())]
+    #[arg(help_heading = ENDPOINTS)]
+    enable_env: bool,
+
+    /// Permit browsers to connect to `/echo` from any origin
+    #[arg(long, env = "KNEETAP_ALLOW_ANY_WS_ORIGIN", value_parser = BoolishValueParser::new())]
+    #[arg(help_heading = ENDPOINTS)]
+    allow_any_ws_origin: bool,
 
     /// Most connections open at once, across all listeners
     #[arg(long, env = "KNEETAP_MAX_CONNECTIONS", default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(help_heading = LIMITS)]
     max_connections: u32,
 
     /// Most requests handled at once, across all connections
     #[arg(long, env = "KNEETAP_MAX_INFLIGHT_REQUESTS", default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(help_heading = LIMITS)]
     max_inflight_requests: u32,
 
     /// Time allowed for a TLS handshake
     #[arg(long, env = "KNEETAP_HANDSHAKE_TIMEOUT", default_value = "10s", value_parser = positive_duration)]
+    #[arg(help_heading = TIMEOUTS)]
     handshake_timeout: Duration,
 
     /// Time allowed for a connection to send its first bytes and complete its headers
     #[arg(long, env = "KNEETAP_HEADER_TIMEOUT", default_value = "10s", value_parser = positive_duration)]
+    #[arg(help_heading = TIMEOUTS)]
     header_timeout: Duration,
 
     /// Time allowed to read a request body, or between messages on a gRPC stream
     #[arg(long, env = "KNEETAP_BODY_TIMEOUT", default_value = "30s", value_parser = positive_duration)]
+    #[arg(help_heading = TIMEOUTS)]
     body_timeout: Duration,
 
     /// Time a blocked write may wait for the client to read
     #[arg(long, env = "KNEETAP_WRITE_IDLE_TIMEOUT", default_value = "30s", value_parser = positive_duration)]
+    #[arg(help_heading = TIMEOUTS)]
     write_idle_timeout: Duration,
 
     /// Time a connection may stay open with no requests, or a stream with no messages
     #[arg(long, env = "KNEETAP_IDLE_TIMEOUT", default_value = "60s", value_parser = positive_duration)]
+    #[arg(help_heading = TIMEOUTS)]
     idle_timeout: Duration,
 
     /// Time allowed for work in progress to finish after a shutdown signal; `0s` exits at once
     #[arg(long, env = "KNEETAP_SHUTDOWN_TIMEOUT", default_value = "10s", value_parser = humantime::parse_duration)]
+    #[arg(help_heading = TIMEOUTS)]
     shutdown_timeout: Duration,
+
+    /// Exit at startup on any failure instead of continuing with what works
+    #[arg(long, env = "KNEETAP_STRICT", value_parser = BoolishValueParser::new())]
+    #[arg(help_heading = STARTUP)]
+    strict: bool,
 
     /// User ID to run as after binding, when started as root [default: 65532]
     #[arg(long, env = "PUID")]
+    #[arg(help_heading = STARTUP)]
     puid: Option<u32>,
 
     /// Group ID to run as after binding, when started as root [default: 65532, or 0 if PUID is 0]
     #[arg(long, env = "PGID")]
+    #[arg(help_heading = STARTUP)]
     pgid: Option<u32>,
 }
 
@@ -166,6 +199,7 @@ fn positive_duration(value: &str) -> Result<Duration, String> {
 
 /// How a client command connects to a server.
 #[derive(Debug, Args)]
+#[command(next_help_heading = TLS)]
 struct ClientTls {
     /// Accept any server certificate, such as a generated one
     #[arg(long, conflicts_with = "cacert")]
@@ -206,38 +240,45 @@ struct Healthcheck {
     #[arg(long)]
     url: Option<String>,
 
+    /// Longest the whole check may take
+    #[arg(long, default_value = "5s", value_parser = humantime::parse_duration)]
+    timeout: Duration,
+
     /// Address of the local server, as given to `serve`
     #[arg(long, env = "KNEETAP_BIND")]
+    #[arg(help_heading = LOCAL_SERVER)]
     bind: Option<IpAddr>,
 
     /// HTTP port of the local server, as given to `serve`
     #[arg(long, env = "KNEETAP_PORT")]
+    #[arg(help_heading = LOCAL_SERVER)]
     port: Option<u16>,
 
     /// HTTPS port of the local server, as given to `serve`
     #[arg(long, env = "KNEETAP_TLS_PORT")]
+    #[arg(help_heading = LOCAL_SERVER)]
     tls_port: Option<u16>,
 
     /// The local server doesn't serve plain HTTP
     #[arg(long, env = "KNEETAP_NO_HTTP", value_parser = BoolishValueParser::new())]
+    #[arg(help_heading = LOCAL_SERVER)]
     no_http: bool,
 
     /// The local server doesn't serve HTTPS
     #[arg(long, env = "KNEETAP_NO_TLS", value_parser = BoolishValueParser::new())]
+    #[arg(help_heading = LOCAL_SERVER)]
     no_tls: bool,
 
     /// Name of the local server, as given to `serve`; other servers are ignored
     #[arg(long, env = "KNEETAP_NAME")]
+    #[arg(help_heading = LOCAL_SERVER)]
     name: Option<String>,
 
     /// Client authorities of the local server, as given to `serve`; its refusal to talk without a
     /// client certificate then counts as success, though it can't show the health status
     #[arg(long, env = "KNEETAP_CACERT")]
+    #[arg(help_heading = LOCAL_SERVER)]
     server_cacert: Option<PathBuf>,
-
-    /// Longest the whole check may take
-    #[arg(long, default_value = "5s", value_parser = humantime::parse_duration)]
-    timeout: Duration,
 
     #[command(flatten)]
     tls: ClientTls,
@@ -677,6 +718,27 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[rstest]
+    #[case::serve("serve", &[LISTENERS, TLS, ENDPOINTS, LIMITS, TIMEOUTS, STARTUP, LOGGING])]
+    #[case::healthcheck("healthcheck", &[LOCAL_SERVER, TLS, LOGGING])]
+    #[case::report("report", &[TLS, LOGGING])]
+    fn help_groups_options_under_headings_in_reading_order(
+        #[case] name: &str,
+        #[case] expected: &[&str],
+    ) {
+        let mut command = Cli::command();
+        command.build();
+        let subcommand = command.find_subcommand(name).unwrap();
+
+        let mut headings: Vec<_> = subcommand
+            .get_arguments()
+            .filter_map(clap::Arg::get_help_heading)
+            .collect();
+        headings.dedup();
+
+        assert_eq!(headings, expected);
+    }
 
     /// A real identity error, from certificate files that don't exist.
     fn identity_error() -> kneetap_server::Error {
