@@ -92,7 +92,8 @@ jobs:
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
-          flavor: latest=false
+          # Moves `latest` for stable versions only, never for a prerelease.
+          flavor: latest=auto
           tags: type=semver,pattern={{version}},value=${{ github.ref_name }}
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

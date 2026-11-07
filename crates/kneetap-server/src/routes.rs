@@ -185,7 +185,16 @@ fn is_grpc_type(content_type: &str) -> bool {
 }
 
 fn openapi() -> Response {
-    with_type(StatusCode::OK, "application/yaml", OPENAPI.into())
+    with_type(
+        StatusCode::OK,
+        "application/yaml",
+        versioned_openapi().into(),
+    )
+}
+
+/// Replaces the `CARGO_PKG_VERSION` placeholder in the API description with this crate's version.
+fn versioned_openapi() -> String {
+    OPENAPI.replace("CARGO_PKG_VERSION", env!("CARGO_PKG_VERSION"))
 }
 
 /// Returns the methods a path allows when it refuses this one.
@@ -683,7 +692,7 @@ mod tests {
     }
 
     fn spec() -> serde_json::Value {
-        serde_saphyr::from_str(OPENAPI).unwrap()
+        serde_saphyr::from_str(&versioned_openapi()).unwrap()
     }
 
     /// Returns the field names of an object, so that schemas and reports can be compared.
@@ -719,6 +728,11 @@ mod tests {
         let pointer = target.trim_start_matches('#');
         let found = spec.pointer(pointer).is_some();
         (!found).then(|| target.to_owned()).into_iter().collect()
+    }
+
+    #[test]
+    fn openapi_version_matches_the_crate() {
+        assert_eq!(spec()["info"]["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
@@ -784,6 +798,6 @@ mod tests {
         let response = send(request("GET", "/openapi.yaml", "")).await;
 
         assert_eq!(response.headers()[header::CONTENT_TYPE], "application/yaml");
-        assert_eq!(body_text(response).await, OPENAPI);
+        assert_eq!(body_text(response).await, versioned_openapi());
     }
 }
