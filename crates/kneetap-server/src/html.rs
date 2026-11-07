@@ -464,7 +464,7 @@ pub(crate) mod tests {
             version: "1.2.3".to_owned(),
             commit: None,
             started_at: "2026-11-07T08:00:00.000Z".to_owned(),
-            request_id: "Hq7mW2pL-7".to_owned(),
+            request_id: "Hq7mW2pL".to_owned(),
             received_at: "2026-11-07T09:00:00.250Z".to_owned(),
             remote_addr: "10.0.0.9:4000".to_owned(),
             connection: ConnectionReport {
