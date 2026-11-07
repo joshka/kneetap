@@ -25,6 +25,8 @@ use crate::routes::Context;
 
 /// Builds the gRPC routes, which share a listener with HTTP by matching on their paths.
 ///
+/// These paths are gRPC's whatever the content type, so they never produce an HTTP report.
+///
 /// Reflection is included so that tools can call the server without a copy of the proto, in both
 /// versions because tools differ in which they use.
 pub fn router(context: Arc<Context>, health: HealthServer<impl HealthApi>) -> Router {
@@ -57,9 +59,11 @@ async fn bound_body(
         .unwrap_or_else(|_| StatusCode::REQUEST_TIMEOUT.into_response())
 }
 
-/// Starts a reflection service describing the embedded package.
+/// Starts a reflection service describing the embedded package and the health service.
 fn reflection() -> Reflection<'static> {
-    Reflection::configure().register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+    Reflection::configure()
+        .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
+        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
 }
 
 /// The `kneetap.v1.Reporter` service.

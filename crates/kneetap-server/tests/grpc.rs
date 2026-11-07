@@ -158,7 +158,11 @@ async fn reflection_v1_lists_the_services() {
     names.sort();
     assert_eq!(
         names,
-        ["grpc.reflection.v1.ServerReflection", "kneetap.v1.Reporter"]
+        [
+            "grpc.health.v1.Health",
+            "grpc.reflection.v1.ServerReflection",
+            "kneetap.v1.Reporter"
+        ]
     );
 }
 
@@ -195,6 +199,7 @@ async fn reflection_v1alpha_lists_the_services() {
     assert_eq!(
         names,
         [
+            "grpc.health.v1.Health",
             "grpc.reflection.v1alpha.ServerReflection",
             "kneetap.v1.Reporter"
         ]

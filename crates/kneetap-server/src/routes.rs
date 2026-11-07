@@ -169,7 +169,17 @@ fn is_grpc(parts: &Parts) -> bool {
         .headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("application/grpc"))
+        .is_some_and(is_grpc_type)
+}
+
+/// Matches `application/grpc` and its `+format` variants, but not `application/grpc-web`.
+fn is_grpc_type(content_type: &str) -> bool {
+    // `mime` refuses the whitespace that RFC 9110 section 5.6.6 allows before parameters.
+    let (essence, _) = content_type.split_once(';').unwrap_or((content_type, ""));
+    essence
+        .trim_end()
+        .parse::<mime::Mime>()
+        .is_ok_and(|media| media.type_() == mime::APPLICATION && media.subtype() == "grpc")
 }
 
 fn openapi() -> Response {
@@ -394,6 +404,18 @@ mod tests {
           "tls": null
         }
         "#);
+    }
+
+    #[rstest]
+    #[case("application/grpc", true)]
+    #[case("application/grpc+proto", true)]
+    #[case("application/grpc;charset=utf-8", true)]
+    #[case("application/grpc ;charset=utf-8", true)]
+    #[case("Application/GRPC", true)]
+    #[case("application/grpc-web", false)]
+    #[case("application/grpc-web+proto", false)]
+    fn grpc_types_match_at_their_boundary(#[case] content_type: &str, #[case] expected: bool) {
+        assert_eq!(is_grpc_type(content_type), expected);
     }
 
     #[tokio::test]
