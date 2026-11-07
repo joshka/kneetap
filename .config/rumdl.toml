@@ -1,5 +1,10 @@
 [global]
 exclude = ["CLAUDE.md", "target", "work"]
 
-[MD013]
+[line-length]
 line-length = 100
+tables = false
+
+[table-format]
+enabled = true
+style = "aligned"
