@@ -73,6 +73,12 @@ start -e PUID=1000 -e PGID=1001 "$image"
 wait_healthy "$id"
 expect_identity "$id" 1000:1001
 
+echo "PUID=0 stays root and warns"
+start -e PUID=0 "$image"
+wait_healthy "$id"
+expect_identity "$id" 0:65532
+docker logs "$id" 2>&1 | grep -q privileges.root.retained
+
 echo "a non-root user falls back to high ports"
 start --user 12345:12345 --cap-drop=ALL "$image"
 wait_healthy "$id"

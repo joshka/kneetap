@@ -553,16 +553,26 @@ async fn shutdown_signal() {
     {
         use tokio::signal::unix::{SignalKind, signal};
 
-        let Ok(mut terminate) = signal(SignalKind::terminate()) else {
-            return interrupted().await;
-        };
-        tokio::select! {
-            () = interrupted() => {}
-            _ = terminate.recv() => {}
-        }
+        first_signal(interrupted(), signal(SignalKind::terminate())).await;
     }
     #[cfg(not(unix))]
     interrupted().await;
+}
+
+/// Completes on whichever signal comes first, relying on `interrupt` if `terminate` wasn't
+/// installed.
+#[cfg(unix)]
+async fn first_signal(
+    interrupt: impl Future<Output = ()>,
+    terminate: std::io::Result<tokio::signal::unix::Signal>,
+) {
+    let Ok(mut terminate) = terminate else {
+        return interrupt.await;
+    };
+    tokio::select! {
+        () = interrupt => {}
+        _ = terminate.recv() => {}
+    }
 }
 
 /// Completes on an interrupt, or never if the interrupt handler can't be installed.
@@ -598,15 +608,27 @@ fn usable_tls(serve: &Serve, degradations: &mut Vec<String>) -> Result<Option<Tl
         return Err(error.into());
     }
     tracing::warn!(%error, "tls.setup.failed");
+    Ok(recover_tls(tls, &error, degradations, TlsConfig::validate))
+}
+
+/// Retries a rejected identity with a generated one, which `validate` must still accept, because
+/// the client authority can break between the two checks.
+fn recover_tls(
+    tls: TlsConfig,
+    error: &kneetap_server::Error,
+    degradations: &mut Vec<String>,
+    validate: impl FnOnce(&TlsConfig) -> Result<(), kneetap_server::Error>,
+) -> Option<TlsConfig> {
     if error.is_tls_identity() {
         let generated = tls.with_generated_identity();
-        if generated.validate().is_ok() {
+        let Err(error) = validate(&generated) else {
             degradations.push("server_identity_fallback".to_owned());
-            return Ok(Some(generated));
-        }
+            return Some(generated);
+        };
+        tracing::warn!(%error, "tls.retry.failed");
     }
     degradations.push("tls_setup_failed".to_owned());
-    Ok(None)
+    None
 }
 
 /// Translates the flags. `--cert` requires `--key`, so a partial pair can't reach this point.
@@ -627,6 +649,52 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    /// A real identity error, from certificate files that don't exist.
+    fn identity_error() -> kneetap_server::Error {
+        missing_files().validate().unwrap_err()
+    }
+
+    fn missing_files() -> TlsConfig {
+        TlsConfig::files("/nonexistent/cert.pem", "/nonexistent/key.pem")
+    }
+
+    #[test]
+    fn a_rejected_identity_falls_back_to_a_generated_one() {
+        let mut degradations = Vec::new();
+
+        let tls = recover_tls(
+            missing_files(),
+            &identity_error(),
+            &mut degradations,
+            |_| Ok(()),
+        );
+
+        assert_eq!(tls.map(|_| ()), Some(()));
+        assert_eq!(degradations, ["server_identity_fallback"]);
+    }
+
+    #[test]
+    fn a_failed_retry_turns_https_off_rather_than_stopping() {
+        let mut degradations = Vec::new();
+        let retry = |_: &TlsConfig| Err(identity_error());
+
+        let tls = recover_tls(missing_files(), &identity_error(), &mut degradations, retry);
+
+        assert_eq!(tls.map(|_| ()), None);
+        assert_eq!(degradations, ["tls_setup_failed"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_interrupt_still_stops_the_server_without_a_terminate_handler() {
+        let terminate = Err(std::io::Error::other("no handler"));
+
+        let stopped = first_signal(std::future::ready(()), terminate);
+
+        let limit = Duration::from_secs(5);
+        assert_eq!(tokio::time::timeout(limit, stopped).await.ok(), Some(()));
+    }
 
     #[rstest]
     #[case(false, false, &[
