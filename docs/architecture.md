@@ -26,8 +26,9 @@ Order matters, because some steps need privileges that later steps give up.
 3. `Deadlines` wraps the socket, closing silent connections, incomplete HTTP/2 header blocks, and
    blocked writes. It keeps the connection permit, so an upgraded WebSocket still counts.
 4. `hyper-util` detects HTTP/1.1 or HTTP/2.
-5. Each request takes a request permit or gets a 503. `TrackedBody` holds that permit until the
-   response finishes or the client disconnects.
+5. Each request takes a request permit or gets a 503 with no body and its reason in
+   `x-kneetap-refusal`. `TrackedBody` holds that permit until the response finishes or the client
+   disconnects.
 6. The connection closes when the client leaves, the server stops, or it has no requests for the
    idle timeout. Requests count rather than traffic, because pings say nothing about need. A
    WebSocket or gRPC stream with no messages for that long ends too. An HTTP/2 response stalled by

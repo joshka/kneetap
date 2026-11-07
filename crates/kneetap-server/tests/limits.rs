@@ -8,6 +8,7 @@ use axum::http::{Method, Request};
 use futures_util::StreamExt;
 use h2::client::SendRequest;
 use h2::ext::Protocol;
+use kneetap_api::REFUSAL_HEADER;
 use kneetap_server::{Server, ServerBuilder, TlsConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -278,6 +279,43 @@ async fn a_zero_window_http2_client_cannot_hold_request_capacity() {
     assert_eq!(held, "HTTP/1.1 503 Service Unavailable");
     assert!(closed.is_ok(), "the stalled connection stayed open");
     assert_eq!(status(address, BENCH).await, "HTTP/1.1 200 OK");
+}
+
+/// Starts a server that admits one request, and takes that one with a slow request.
+///
+/// The server only asks for the upload once it has admitted the request, so the `100 Continue`
+/// shows the slot is taken.
+async fn start_full() -> (SocketAddr, TcpStream) {
+    let address = start(Server::builder().max_inflight_requests(1));
+    let mut slow = TcpStream::connect(address).await.unwrap();
+    let request = "POST /?wait=1m HTTP/1.1\r\nHost: test\r\nExpect: 100-continue\r\nContent-Length: 1\r\n\r\n";
+    slow.write_all(request.as_bytes()).await.unwrap();
+    let mut response = vec![0; 256];
+    let read = slow.read(&mut response).await.unwrap();
+    let response = String::from_utf8_lossy(&response[..read]);
+    assert_eq!(response.lines().next(), Some("HTTP/1.1 100 Continue"));
+    slow.write_all(b"x").await.unwrap();
+    (address, slow)
+}
+
+#[tokio::test]
+async fn a_zero_window_http2_client_cannot_hold_refused_streams_open() {
+    let (address, _slow) = start_full().await;
+    let stream = TcpStream::connect(address).await.unwrap();
+    let handshake = h2::client::Builder::new()
+        .initial_window_size(0)
+        .handshake::<_, Bytes>(stream);
+    let (mut client, connection) = handshake.await.unwrap();
+    tokio::spawn(connection);
+    let request = Request::get(format!("http://{address}/")).body(()).unwrap();
+
+    let (response, _) = client.send_request(request, true).unwrap();
+
+    let response = response.await.unwrap();
+    let reason = &response.headers()[REFUSAL_HEADER];
+    assert_eq!(response.status(), 503);
+    assert_eq!(reason, "request capacity exhausted");
+    assert!(response.body().is_end_stream(), "the refusal has a body");
 }
 
 #[tokio::test]
