@@ -166,17 +166,25 @@ impl Display for Report {
             }
         }
         if let Some(error) = &self.server_status.reload_error {
-            writeln!(f, "Reload error: {error}")?;
+            writeln!(f, "Reload error: {}", escape_controls(error))?;
+        }
+        for degradation in &self.server_status.degradations {
+            writeln!(f, "Degradation: {}", escape_controls(degradation))?;
         }
         if let Some(environment) = &self.environment {
             writeln!(f, "Environment:")?;
             for line in environment {
-                writeln!(f, "  {line}")?;
+                writeln!(f, "  {}", escape_controls(line))?;
             }
+        }
+        // An absolute-form target can name a different authority than the `Host` header.
+        let received_host = self.headers.get("host");
+        if received_host.is_some_and(|values| !values.contains(&self.host)) {
+            writeln!(f, "URI authority: {}", self.host)?;
         }
         writeln!(f, "{} {} {}", self.method, self.target, self.http_version)?;
         // HTTP/2 carries the host in `:authority`, so it's missing from the header map.
-        if !self.headers.contains_key("host") && !self.host.is_empty() {
+        if received_host.is_none() && !self.host.is_empty() {
             writeln!(f, "  host: {}", self.host)?;
         }
         for (name, values) in &self.headers {
@@ -186,6 +194,18 @@ impl Display for Report {
         }
         writeln!(f)
     }
+}
+
+/// Escapes control characters, so a value can't add lines or the blank line that ends a report.
+fn escape_controls(text: &str) -> String {
+    let escape = |character: char| {
+        if character.is_control() {
+            character.escape_default().to_string()
+        } else {
+            character.to_string()
+        }
+    };
+    text.chars().map(escape).collect()
 }
 
 #[cfg(test)]
@@ -266,6 +286,93 @@ mod tests {
         RemoteAddr: 10.0.0.9:4000
         Environment:
           A=1
+        GET /a?b=c HTTP/2.0
+          host: example.test
+          accept: */*
+        ");
+    }
+
+    #[test]
+    fn environment_values_stay_on_one_line() {
+        let report = Report {
+            environment: Some(vec!["A=1\n\nB\t2".to_owned()]),
+            ..report()
+        };
+
+        assert_eq!(report.to_string().lines().nth(5), Some("  A=1\\n\\nB\\t2"));
+    }
+
+    #[test]
+    fn server_status_values_stay_on_one_line() {
+        let report = Report {
+            server_status: ServerStatus {
+                reload_error: Some("bad\n\nkey".to_owned()),
+                degradations: vec!["odd\ncode".to_owned()],
+            },
+            ..report()
+        };
+
+        let text = report.to_string();
+        let lines: Vec<_> = text.lines().skip(4).take(2).collect();
+        assert_eq!(
+            lines,
+            ["Reload error: bad\\n\\nkey", "Degradation: odd\\ncode"]
+        );
+    }
+
+    #[test]
+    fn a_uri_authority_that_differs_from_host_is_shown() {
+        let report = Report {
+            host: "backend.test".to_owned(),
+            headers: BTreeMap::from([("host".to_owned(), vec!["proxy.test".to_owned()])]),
+            ..report()
+        };
+
+        insta::assert_snapshot!(report, @r"
+        Name: blue
+        Hostname: web-1
+        IP: 10.0.0.5
+        RemoteAddr: 10.0.0.9:4000
+        URI authority: backend.test
+        GET /a?b=c HTTP/2.0
+          host: proxy.test
+        ");
+    }
+
+    #[test]
+    fn a_matching_host_header_is_shown_once() {
+        let report = Report {
+            headers: BTreeMap::from([("host".to_owned(), vec!["example.test".to_owned()])]),
+            ..report()
+        };
+
+        insta::assert_snapshot!(report, @r"
+        Name: blue
+        Hostname: web-1
+        IP: 10.0.0.5
+        RemoteAddr: 10.0.0.9:4000
+        GET /a?b=c HTTP/2.0
+          host: example.test
+        ");
+    }
+
+    #[test]
+    fn degradations_are_visible_in_text() {
+        let report = Report {
+            server_status: ServerStatus {
+                reload_error: None,
+                degradations: vec!["http_bind_failed".to_owned(), "tls_setup_failed".to_owned()],
+            },
+            ..report()
+        };
+
+        insta::assert_snapshot!(report, @r"
+        Name: blue
+        Hostname: web-1
+        IP: 10.0.0.5
+        RemoteAddr: 10.0.0.9:4000
+        Degradation: http_bind_failed
+        Degradation: tls_setup_failed
         GET /a?b=c HTTP/2.0
           host: example.test
           accept: */*
