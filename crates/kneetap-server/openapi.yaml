@@ -298,7 +298,13 @@ components:
       required:
         - hostname
         - addresses
+        - version
+        - commit
+        - startedAt
+        - requestId
+        - receivedAt
         - remoteAddr
+        - connection
         - method
         - target
         - host
@@ -318,9 +324,28 @@ components:
           type: array
           items:
             type: string
+        version:
+          type: string
+          description: The kneetap-server version.
+        commit:
+          type: [string, 'null']
+          description: The commit the server was built from, when the program running it knows.
+        startedAt:
+          type: string
+          format: date-time
+          description: When the server started serving, in UTC.
+        requestId:
+          type: string
+          description: An ID for this request that no other request to any server has.
+        receivedAt:
+          type: string
+          format: date-time
+          description: When the server received this request, in UTC.
         remoteAddr:
           type: string
           description: The connected peer, which is the proxy when there is one.
+        connection:
+          $ref: '#/components/schemas/Connection'
         environment:
           type: array
           items:
@@ -351,6 +376,24 @@ components:
             - type: 'null'
         serverStatus:
           $ref: '#/components/schemas/ServerStatus'
+    Connection:
+      type: object
+      required:
+        - id
+        - requestNumber
+        - openedAt
+      properties:
+        id:
+          type: string
+          description: Opaque, so only compare it with another report's.
+        requestNumber:
+          type: integer
+          minimum: 1
+          description: This request's place on the connection, in the order requests started.
+        openedAt:
+          type: string
+          format: date-time
+          description: When the server accepted the connection.
     Tls:
       type: object
       required:

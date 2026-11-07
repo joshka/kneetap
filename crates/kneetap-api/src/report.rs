@@ -20,8 +20,26 @@ pub struct Report {
     /// The host's interface addresses, sorted.
     pub addresses: Vec<String>,
 
+    /// The `kneetap-server` version.
+    pub version: String,
+
+    /// The commit the server was built from, when the program that runs it knows.
+    pub commit: Option<String>,
+
+    /// When the server started serving, as an RFC 3339 UTC timestamp.
+    pub started_at: String,
+
+    /// An ID for this request that no other request to any server has.
+    pub request_id: String,
+
+    /// When the server received this request, as an RFC 3339 UTC timestamp.
+    pub received_at: String,
+
     /// The address of the connected peer, which is the proxy when there is one.
     pub remote_addr: String,
+
+    /// The connection the request arrived on.
+    pub connection: ConnectionReport,
 
     /// The server's environment as `NAME=value` lines, when the operator allowed it and the client
     /// asked for it.
@@ -67,6 +85,20 @@ pub struct ServerStatus {
     /// Codes for what didn't start normally, such as `http_bind_failed`.
     #[serde(default)]
     pub degradations: Vec<String>,
+}
+
+/// The connection a request arrived on, which shows whether a proxy reuses its connections.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionReport {
+    /// An opaque ID, only meaningful compared with another report's.
+    pub id: String,
+
+    /// This request's place on the connection, counting from 1 in the order requests started.
+    pub request_number: u64,
+
+    /// When the server accepted the connection, in RFC 3339 form.
+    pub opened_at: String,
 }
 
 /// What was negotiated on a TLS connection.
@@ -154,7 +186,20 @@ impl Display for Report {
         for address in &self.addresses {
             writeln!(f, "IP: {address}")?;
         }
+        match &self.commit {
+            Some(commit) => writeln!(f, "Version: {} ({commit})", self.version)?,
+            None => writeln!(f, "Version: {}", self.version)?,
+        }
+        writeln!(f, "Started: {}", self.started_at)?;
+        writeln!(f, "Request: {}", self.request_id)?;
+        writeln!(f, "Received: {}", self.received_at)?;
         writeln!(f, "RemoteAddr: {}", self.remote_addr)?;
+        let connection = &self.connection;
+        writeln!(
+            f,
+            "Connection: {} request {} (opened {})",
+            connection.id, connection.request_number, connection.opened_at
+        )?;
         if let Some(tls) = &self.tls {
             let verification = tls.client_verification;
             writeln!(f, "TLS: {} {} ({verification})", tls.version, tls.cipher)?;
@@ -217,7 +262,17 @@ mod tests {
             name: Some("blue".to_owned()),
             hostname: Some("web-1".to_owned()),
             addresses: vec!["10.0.0.5".to_owned()],
+            version: "1.2.3".to_owned(),
+            commit: None,
+            started_at: "2026-11-07T08:00:00.000Z".to_owned(),
+            request_id: "Hq7mW2pL-7".to_owned(),
+            received_at: "2026-11-07T09:00:00.250Z".to_owned(),
             remote_addr: "10.0.0.9:4000".to_owned(),
+            connection: ConnectionReport {
+                id: "aZ3kQ9xB".to_owned(),
+                request_number: 2,
+                opened_at: "2026-01-01T00:00:00.000Z".to_owned(),
+            },
             environment: None,
             method: "GET".to_owned(),
             target: "/a?b=c".to_owned(),
@@ -237,7 +292,12 @@ mod tests {
         Name: blue
         Hostname: web-1
         IP: 10.0.0.5
+        Version: 1.2.3
+        Started: 2026-11-07T08:00:00.000Z
+        Request: Hq7mW2pL-7
+        Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
+        Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
         GET /a?b=c HTTP/2.0
           host: example.test
           accept: */*
@@ -262,7 +322,12 @@ mod tests {
         Name: blue
         Hostname: web-1
         IP: 10.0.0.5
+        Version: 1.2.3
+        Started: 2026-11-07T08:00:00.000Z
+        Request: Hq7mW2pL-7
+        Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
+        Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
         TLS: TLSv1_3 TLS13_AES_128_GCM_SHA256 (unverified)
         ALPN: h2
         Client subject: CN=client
@@ -283,7 +348,12 @@ mod tests {
         Name: blue
         Hostname: web-1
         IP: 10.0.0.5
+        Version: 1.2.3
+        Started: 2026-11-07T08:00:00.000Z
+        Request: Hq7mW2pL-7
+        Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
+        Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
         Environment:
           A=1
         GET /a?b=c HTTP/2.0
@@ -299,7 +369,7 @@ mod tests {
             ..report()
         };
 
-        assert_eq!(report.to_string().lines().nth(5), Some("  A=1\\n\\nB\\t2"));
+        assert_eq!(report.to_string().lines().nth(10), Some("  A=1\\n\\nB\\t2"));
     }
 
     #[test]
@@ -313,7 +383,7 @@ mod tests {
         };
 
         let text = report.to_string();
-        let lines: Vec<_> = text.lines().skip(4).take(2).collect();
+        let lines: Vec<_> = text.lines().skip(9).take(2).collect();
         assert_eq!(
             lines,
             ["Reload error: bad\\n\\nkey", "Degradation: odd\\ncode"]
@@ -332,7 +402,12 @@ mod tests {
         Name: blue
         Hostname: web-1
         IP: 10.0.0.5
+        Version: 1.2.3
+        Started: 2026-11-07T08:00:00.000Z
+        Request: Hq7mW2pL-7
+        Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
+        Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
         URI authority: backend.test
         GET /a?b=c HTTP/2.0
           host: proxy.test
@@ -350,7 +425,12 @@ mod tests {
         Name: blue
         Hostname: web-1
         IP: 10.0.0.5
+        Version: 1.2.3
+        Started: 2026-11-07T08:00:00.000Z
+        Request: Hq7mW2pL-7
+        Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
+        Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
         GET /a?b=c HTTP/2.0
           host: example.test
         ");
@@ -370,7 +450,12 @@ mod tests {
         Name: blue
         Hostname: web-1
         IP: 10.0.0.5
+        Version: 1.2.3
+        Started: 2026-11-07T08:00:00.000Z
+        Request: Hq7mW2pL-7
+        Received: 2026-11-07T09:00:00.250Z
         RemoteAddr: 10.0.0.9:4000
+        Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
         Degradation: http_bind_failed
         Degradation: tls_setup_failed
         GET /a?b=c HTTP/2.0
@@ -390,8 +475,21 @@ mod tests {
         };
 
         assert_eq!(
-            report.to_string().lines().nth(4),
+            report.to_string().lines().nth(9),
             Some("Reload error: bad key")
+        );
+    }
+
+    #[test]
+    fn version_shows_the_commit_when_known() {
+        let report = Report {
+            commit: Some("abc1234".to_owned()),
+            ..report()
+        };
+
+        assert_eq!(
+            report.to_string().lines().nth(3),
+            Some("Version: 1.2.3 (abc1234)")
         );
     }
 

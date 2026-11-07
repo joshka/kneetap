@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::health::{self, Health};
-use crate::host::Host;
+use crate::identity::Identity;
 use crate::status::Status;
 use crate::{body, data, echo, report};
 
@@ -24,8 +24,7 @@ const OPENAPI: &str = include_str!("../openapi.yaml");
 /// Settings and host identity that every request reads.
 #[derive(Debug)]
 pub struct Context {
-    pub name: Option<String>,
-    pub host: Host,
+    pub identity: Identity,
     pub max_body_size: usize,
     pub max_wait: Duration,
     pub enable_env: bool,
@@ -229,8 +228,7 @@ fn report_response(
         .get::<ConnectInfo<SocketAddr>>()
         .expect("the listener attaches the peer address")
         .0;
-    let name = context.name.clone();
-    let mut report = report::build(name, &context.host, peer, environment, parts, bytes);
+    let mut report = report::build(&context.identity, peer, environment, parts, bytes);
     report.server_status = context.status.read().clone();
     let is_api = parts.uri.path() == "/api";
     // Repeated fields mean the same as one comma-separated list (RFC 9110 section 5.3).
@@ -318,21 +316,25 @@ mod tests {
     use std::collections::BTreeSet;
 
     use axum::http::Request;
-    use kneetap_api::{CertificateSource, ClientVerification, TlsReport};
+    use kneetap_api::{CertificateSource, ClientVerification, ConnectionReport, Report, TlsReport};
     use rstest::rstest;
     use tower::ServiceExt;
 
     use super::*;
+    use crate::host::Host;
 
     const MAX_BODY_SIZE: usize = 4;
 
+    fn host() -> Host {
+        Host {
+            name: Some("web-1".to_owned()),
+            addresses: vec!["10.0.0.5".to_owned()],
+        }
+    }
+
     async fn context() -> Context {
         Context {
-            name: Some("blue".to_owned()),
-            host: Host {
-                name: Some("web-1".to_owned()),
-                addresses: vec!["10.0.0.5".to_owned()],
-            },
+            identity: Identity::new(Some("blue".to_owned()), host(), None).unwrap(),
             max_body_size: MAX_BODY_SIZE,
             max_wait: Duration::from_secs(60),
             enable_env: false,
@@ -354,10 +356,24 @@ mod tests {
         send_to(context().await, request).await
     }
 
-    async fn send_to(context: Context, mut request: Request<Body>) -> Response {
+    async fn send_to(context: Context, request: Request<Body>) -> Response {
+        router(Arc::new(context))
+            .oneshot(arrived(request))
+            .await
+            .unwrap()
+    }
+
+    /// Adds what the listener attaches to every request.
+    fn arrived(mut request: Request<Body>) -> Request<Body> {
         let peer: SocketAddr = "10.0.0.9:4000".parse().unwrap();
-        request.extensions_mut().insert(ConnectInfo(peer));
-        router(Arc::new(context)).oneshot(request).await.unwrap()
+        let extensions = request.extensions_mut();
+        extensions.insert(ConnectInfo(peer));
+        extensions.insert(ConnectionReport {
+            id: "aZ3kQ9xB".to_owned(),
+            request_number: 2,
+            opened_at: "2026-01-01T00:00:00.000Z".to_owned(),
+        });
+        request
     }
 
     fn request(method: &str, target: &str, body: &'static str) -> Request<Body> {
@@ -375,15 +391,31 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
+    /// Hides the lines that change with each run.
+    fn redact_text(text: &str) -> String {
+        let redact = |line: &str| match line.split_once(": ") {
+            Some((label @ ("Version" | "Started" | "Request" | "Received"), _)) => {
+                format!("{label}: [redacted]")
+            }
+            _ => line.to_owned(),
+        };
+        text.lines().map(redact).join("\n")
+    }
+
     #[tokio::test]
     async fn text_report_ends_with_the_request_body() {
         let response = send(request("POST", "/orders?id=1", "ping")).await;
 
-        insta::assert_snapshot!(body_text(response).await, @r"
+        insta::assert_snapshot!(redact_text(&body_text(response).await), @r"
         Name: blue
         Hostname: web-1
         IP: 10.0.0.5
+        Version: [redacted]
+        Started: [redacted]
+        Request: [redacted]
+        Received: [redacted]
         RemoteAddr: 10.0.0.9:4000
+        Connection: aZ3kQ9xB request 2 (opened 2026-01-01T00:00:00.000Z)
         POST /orders?id=1 HTTP/1.1
 
         ping
@@ -394,7 +426,10 @@ mod tests {
     async fn api_returns_the_report_as_json() {
         let response = send(request("GET", "/api", "")).await;
 
-        let json: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+        let mut json: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+        for field in ["version", "startedAt", "requestId", "receivedAt"] {
+            json[field] = "[redacted]".into();
+        }
         insta::assert_json_snapshot!(json, @r#"
         {
           "addresses": [
@@ -402,21 +437,53 @@ mod tests {
           ],
           "body": "",
           "bodyEncoding": "text",
+          "commit": null,
+          "connection": {
+            "id": "aZ3kQ9xB",
+            "openedAt": "2026-01-01T00:00:00.000Z",
+            "requestNumber": 2
+          },
           "headers": {},
           "host": "",
           "hostname": "web-1",
           "httpVersion": "HTTP/1.1",
           "method": "GET",
           "name": "blue",
+          "receivedAt": "[redacted]",
           "remoteAddr": "10.0.0.9:4000",
+          "requestId": "[redacted]",
           "serverStatus": {
             "degradations": [],
             "reloadError": null
           },
+          "startedAt": "[redacted]",
           "target": "/api",
-          "tls": null
+          "tls": null,
+          "version": "[redacted]"
         }
         "#);
+    }
+
+    #[tokio::test]
+    async fn each_report_has_its_own_id_and_arrival_time() {
+        let app = router(Arc::new(context().await));
+        let mut reports = Vec::new();
+        for _ in 0..2 {
+            let request = arrived(request("GET", "/api", ""));
+            let response = app.clone().oneshot(request).await.unwrap();
+            let report: Report = serde_json::from_str(&body_text(response).await).unwrap();
+            reports.push(report);
+        }
+
+        let [first, second] = &reports[..] else {
+            unreachable!()
+        };
+        assert_ne!(first.request_id, second.request_id);
+        assert_eq!(first.started_at, second.started_at);
+        // RFC 3339 timestamps in UTC with fixed precision sort as text.
+        assert!(first.started_at <= first.received_at, "{first:?}");
+        assert!(first.received_at <= second.received_at, "{second:?}");
+        assert_eq!(first.version, env!("CARGO_PKG_VERSION"));
     }
 
     #[rstest]
@@ -774,6 +841,8 @@ mod tests {
         assert_eq!(keys(&report), keys(&schemas["Report"]["properties"]));
         let status_schema = &schemas["ServerStatus"]["properties"];
         assert_eq!(keys(&report["serverStatus"]), keys(status_schema));
+        let connection_schema = &schemas["Connection"]["properties"];
+        assert_eq!(keys(&report["connection"]), keys(connection_schema));
     }
 
     #[test]

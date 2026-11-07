@@ -2,7 +2,8 @@ use std::convert::Infallible;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use axum::Router;
 use axum::body::Body;
@@ -13,7 +14,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
-use kneetap_api::TlsReport;
+use kneetap_api::{ConnectionReport, TlsReport};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -23,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tower::ServiceExt;
 
+use crate::identity::{self, Arrival};
 use crate::limits::{Activity, Deadlines, Limits, Throttle, TrackedBody};
 use crate::reload::Certificates;
 use crate::tls::Material;
@@ -160,9 +162,17 @@ async fn accept(socket: tokio::net::TcpListener, tls: Option<Arc<Certificates>>,
             }
             continue;
         };
+        // Refusing one connection is better than reusing IDs, which would merge connections.
+        let opened = Opened::now().inspect_err(|error| {
+            tracing::warn!(%peer, %error, "connection.id.failed");
+        });
+        let Ok(opened) = opened else {
+            continue;
+        };
         // A handshake uses the certificates current when its connection arrived.
         let material = tls.as_ref().map(|tls| tls.current());
-        connections.spawn(connection(stream, peer, permit, material, shared.clone()));
+        let task = connection(stream, peer, opened, permit, material, shared.clone());
+        connections.spawn(task);
         while connections.try_join_next().is_some() {}
     }
     // Closing now refuses new clients, rather than leaving them queued until the process exits.
@@ -176,13 +186,14 @@ async fn accept(socket: tokio::net::TcpListener, tls: Option<Arc<Certificates>>,
 async fn connection(
     stream: TcpStream,
     peer: SocketAddr,
+    opened: Opened,
     permit: OwnedSemaphorePermit,
     tls: Option<Arc<Material>>,
     shared: Shared,
 ) {
     let Some(material) = tls else {
         let io = Deadlines::new(stream, permit, &shared.limits);
-        serve(io, peer, None, shared).await;
+        serve(io, peer, opened, None, shared).await;
         return;
     };
     let acceptor = TlsAcceptor::from(material.config.clone());
@@ -203,14 +214,14 @@ async fn connection(
     };
     let report = material.describe(stream.get_ref().1);
     let io = Deadlines::new(stream, permit, &shared.limits);
-    serve(io, peer, Some(report), shared).await;
+    serve(io, peer, opened, Some(report), shared).await;
 }
 
 /// Serves requests on one connection, which finishes those in flight once the server stops.
 ///
 /// A response stalled by HTTP/2 flow control closes the whole connection, as a blocked socket write
 /// does, because hyper offers no way to reset one stream from outside.
-async fn serve<I>(io: I, peer: SocketAddr, tls: Option<TlsReport>, shared: Shared)
+async fn serve<I>(io: I, peer: SocketAddr, opened: Opened, tls: Option<TlsReport>, shared: Shared)
 where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -223,6 +234,7 @@ where
     let service = tower::service_fn(move |mut request: Request<Incoming>| {
         let extensions = request.extensions_mut();
         extensions.insert(ConnectInfo(peer));
+        extensions.insert(opened.next_request());
         if let Some(tls) = &tls {
             extensions.insert(tls.clone());
         }
@@ -266,6 +278,38 @@ where
     }
 }
 
+/// An accepted connection's identity, and a count of the requests it has started.
+#[derive(Clone)]
+struct Opened {
+    id: String,
+    at: String,
+    requests: Arc<AtomicU64>,
+}
+
+impl Opened {
+    /// Records a connection accepted now, with a random ID.
+    ///
+    /// Random IDs stay distinct across replicas and restarts, which a counter's wouldn't.
+    fn now() -> Result<Self, getrandom::Error> {
+        Ok(Self {
+            id: identity::random_id()?,
+            at: identity::timestamp(SystemTime::now()),
+            requests: Arc::default(),
+        })
+    }
+
+    /// Describes the connection for a request that has just started on it.
+    ///
+    /// HTTP/2 requests on one connection run at once, so the count is shared and atomic.
+    fn next_request(&self) -> ConnectionReport {
+        ConnectionReport {
+            id: self.id.clone(),
+            request_number: self.requests.fetch_add(1, Ordering::Relaxed) + 1,
+            opened_at: self.at.clone(),
+        }
+    }
+}
+
 /// Runs a request if there's capacity, tying that capacity to its response body.
 async fn admit(
     mut request: Request<Incoming>,
@@ -284,6 +328,7 @@ async fn admit(
         *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
         return Ok(response);
     };
+    request.extensions_mut().insert(Arrival(SystemTime::now()));
     let guard = activity.begin();
     let version = request.version();
     // An upgrade outlives its response, so it has to mark itself as a request in progress.

@@ -8,6 +8,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::health::Health;
 use crate::host::Host;
+use crate::identity::Identity;
 use crate::limits::Limits;
 use crate::reload::{self, Certificates, ReloadHandle};
 use crate::routes::{self, Context};
@@ -74,7 +75,8 @@ impl Server {
     ///
     /// # Errors
     ///
-    /// Returns an error if a socket can't be handed to the async runtime.
+    /// Returns an error if a socket can't be handed to the async runtime, or the OS can't provide
+    /// the random bytes that request IDs start with.
     pub async fn serve<F>(self, shutdown: F) -> Result<(), Error>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -88,9 +90,9 @@ impl Server {
         let certificates = tls.map(|(tls, config)| Certificates::new(tls, config, status.clone()));
         let certificates = certificates.map(Arc::new);
         let health = Health::new(reporter, settings.name.as_deref()).await;
+        let identity = Identity::new(settings.name, Host::detect(), settings.commit);
         let context = Arc::new(Context {
-            name: settings.name,
-            host: Host::detect(),
+            identity: identity.map_err(Error::entropy)?,
             max_body_size: settings.max_body_size,
             max_wait: settings.max_wait,
             enable_env: settings.enable_env,
@@ -132,6 +134,7 @@ impl Server {
 #[derive(Debug)]
 pub struct ServerBuilder {
     name: Option<String>,
+    commit: Option<String>,
     max_body_size: usize,
     max_wait: Duration,
     enable_env: bool,
@@ -150,6 +153,7 @@ impl Default for ServerBuilder {
     fn default() -> Self {
         Self {
             name: None,
+            commit: None,
             max_body_size: DEFAULT_MAX_BODY_SIZE,
             max_wait: DEFAULT_MAX_WAIT,
             enable_env: false,
@@ -171,6 +175,13 @@ impl ServerBuilder {
     #[must_use]
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
+        self
+    }
+
+    /// Sets the commit included in reports, which the program that runs the server may know.
+    #[must_use]
+    pub fn commit(mut self, commit: impl Into<String>) -> Self {
+        self.commit = Some(commit.into());
         self
     }
 

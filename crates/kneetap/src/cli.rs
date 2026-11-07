@@ -530,6 +530,9 @@ fn run_server(serve: &Serve) -> Result<()> {
     if let Some(name) = &serve.name {
         builder = builder.name(name);
     }
+    if let Some(commit) = option_env!("VERGEN_GIT_SHA") {
+        builder = builder.commit(commit);
+    }
     let strictness = if serve.strict {
         Strictness::Strict
     } else {
