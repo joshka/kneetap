@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "kneetap"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "kneetap-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "insta",
  "prost",
@@ -1178,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "kneetap-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "futures-util",
@@ -1195,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "kneetap-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "axum",
