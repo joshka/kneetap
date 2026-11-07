@@ -28,3 +28,4 @@ tonic-prost-build = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta.workspace = true
+serde_json.workspace = true

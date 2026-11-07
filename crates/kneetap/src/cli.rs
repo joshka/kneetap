@@ -489,7 +489,7 @@ fn probe_target(bind: Option<IpAddr>, port: u16) -> SocketAddr {
     SocketAddr::new(address, port)
 }
 
-/// Prints a report. JSON escapes control characters itself, so only text needs [`printable`].
+/// Prints a report. Both forms escape the server's strings, so they can't drive the terminal.
 async fn run_report(args: ReportArgs) -> Result<()> {
     let client = args.tls.apply(Client::builder()).build()?;
     let url = format!("{}/api", args.url.trim_end_matches('/'));
@@ -497,7 +497,7 @@ async fn run_report(args: ReportArgs) -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        print!("{}", printable(&report.to_string()));
+        print!("{report}");
     }
     Ok(())
 }
@@ -606,20 +606,6 @@ fn check_tls_files(serve: &Serve) -> Result<()> {
         "--no-tls can't be combined with --cert, --key, or --cacert"
     );
     Ok(())
-}
-
-/// Escapes control characters, because a report's strings come from the server and could otherwise
-/// drive the terminal.
-fn printable(text: &str) -> String {
-    let mut output = String::with_capacity(text.len());
-    for character in text.chars() {
-        if character.is_control() && !matches!(character, '\n' | '\t') {
-            output.extend(character.escape_default());
-        } else {
-            output.push(character);
-        }
-    }
-    output
 }
 
 /// Completes when the process is asked to stop, by an interrupt or a container runtime's `SIGTERM`.
@@ -821,11 +807,6 @@ mod tests {
         };
 
         assert_eq!(endpoint.urls(), urls);
-    }
-
-    #[test]
-    fn terminal_escapes_in_reports_are_shown_rather_than_run() {
-        assert_eq!(printable("a\u{1b}[2Jb\tc\n"), "a\\u{1b}[2Jb\tc\n");
     }
 
     #[test]
