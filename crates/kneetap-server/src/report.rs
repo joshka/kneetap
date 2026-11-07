@@ -1,20 +1,20 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::time::SystemTime;
 
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use kneetap_api::{BodyEncoding, Report, ServerStatus, TlsReport};
+use kneetap_api::{BodyEncoding, ConnectionReport, Report, ServerStatus, TlsReport};
 
-use crate::host::Host;
+use crate::identity::{self, Arrival, Identity};
 
 /// Builds a report from a request's head and its already-read body.
 ///
 /// The host comes from the URI when it has an authority, as in HTTP/2, and otherwise from `Host`.
 pub fn build(
-    name: Option<String>,
-    host: &Host,
+    identity: &Identity,
     peer: SocketAddr,
     environment: Option<Vec<String>>,
     parts: &Parts,
@@ -31,11 +31,23 @@ pub fn build(
         Ok(text) => (text.to_owned(), BodyEncoding::Text),
         Err(_) => (STANDARD.encode(body), BodyEncoding::Base64),
     };
+    let received_at = parts.extensions.get::<Arrival>();
+    let received_at = received_at.map_or_else(SystemTime::now, |arrival| arrival.0);
     Report {
-        name,
-        hostname: host.name.clone(),
-        addresses: host.addresses.clone(),
+        name: identity.name.clone(),
+        hostname: identity.host.name.clone(),
+        addresses: identity.host.addresses.clone(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        commit: identity.commit(),
+        started_at: identity.started_at(),
+        request_id: identity.next_request_id(),
+        received_at: identity::timestamp(received_at),
         remote_addr: peer.to_string(),
+        connection: parts
+            .extensions
+            .get::<ConnectionReport>()
+            .expect("the listener attaches the connection")
+            .clone(),
         environment,
         method: parts.method.to_string(),
         target: parts
@@ -73,14 +85,21 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::host::Host;
 
-    fn parts(request: Request<()>) -> Parts {
+    fn parts(mut request: Request<()>) -> Parts {
+        request.extensions_mut().insert(ConnectionReport {
+            id: "aZ3kQ9xB".to_owned(),
+            request_number: 1,
+            opened_at: "2026-01-01T00:00:00.000Z".to_owned(),
+        });
         request.into_parts().0
     }
 
     fn report(request: Request<()>, body: &[u8]) -> Report {
         let peer = "10.0.0.9:4000".parse().unwrap();
-        build(None, &Host::default(), peer, None, &parts(request), body)
+        let identity = Identity::new(None, Host::default(), None).unwrap();
+        build(&identity, peer, None, &parts(request), body)
     }
 
     #[rstest]

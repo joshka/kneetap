@@ -17,6 +17,7 @@ enum ErrorKind {
     MissingTls,
     TlsIdentity,
     ClientCa,
+    Entropy,
 }
 
 impl Error {
@@ -42,6 +43,10 @@ impl Error {
 
     pub(crate) fn client_ca(source: impl Into<Box<dyn error::Error + Send + Sync>>) -> Self {
         Self::new(ErrorKind::ClientCa, Some(source.into()))
+    }
+
+    pub(crate) fn entropy(source: getrandom::Error) -> Self {
+        Self::new(ErrorKind::Entropy, Some(source.into()))
     }
 
     const fn new(kind: ErrorKind, source: Option<Box<dyn error::Error + Send + Sync>>) -> Self {
@@ -73,6 +78,7 @@ impl Display for Error {
             ErrorKind::MissingTls => "an HTTPS listener needs a TLS configuration",
             ErrorKind::TlsIdentity => "failed to load the TLS certificate or key",
             ErrorKind::ClientCa => "failed to load the client certificate authorities",
+            ErrorKind::Entropy => "failed to read random bytes from the OS",
         })
     }
 }

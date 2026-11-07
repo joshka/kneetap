@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use axum::Router;
 use axum::body::Body;
@@ -8,10 +8,11 @@ use axum::extract::{self, ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{self, IntoResponse};
+use kneetap_api::ConnectionReport;
 use kneetap_api::grpc::reporter_server::{Reporter, ReporterServer};
 use kneetap_api::grpc::{
-    FILE_DESCRIPTOR_SET, GetReportRequest, GetReportResponse, MetadataEntry, PingRequest,
-    PingResponse,
+    Connection, FILE_DESCRIPTOR_SET, GetReportRequest, GetReportResponse, MetadataEntry,
+    PingRequest, PingResponse,
 };
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::KeyAndValueRef;
@@ -20,6 +21,7 @@ use tonic::{Request, Response, Status};
 use tonic_health::pb::health_server::{Health as HealthApi, HealthServer};
 use tonic_reflection::server::Builder as Reflection;
 
+use crate::identity::{self, Arrival};
 use crate::limits::{DeadlineBody, QuietBody};
 use crate::report::escape;
 use crate::routes::Context;
@@ -99,17 +101,38 @@ impl Reporter for Service {
     ) -> Result<Response<GetReportResponse>, Status> {
         let peer = request.extensions().get::<ConnectInfo<SocketAddr>>();
         let remote_addr = peer.map_or_default(|info| info.0.to_string());
+        let received_at = request.extensions().get::<Arrival>();
+        let received_at = received_at.map_or_else(SystemTime::now, |arrival| arrival.0);
+        let identity = &self.0.identity;
         Ok(Response::new(GetReportResponse {
-            name: self.0.name.clone(),
-            hostname: self.0.host.name.clone(),
-            addresses: self.0.host.addresses.clone(),
+            name: identity.name.clone(),
+            hostname: identity.host.name.clone(),
+            addresses: identity.host.addresses.clone(),
             remote_addr,
             metadata: metadata(&request),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            commit: identity.commit(),
+            started_at: identity.started_at(),
+            request_id: identity.next_request_id(),
+            received_at: identity::timestamp(received_at),
+            connection: request
+                .extensions()
+                .get::<ConnectionReport>()
+                .map(connection),
         }))
     }
 
     async fn ping(&self, _: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
         Ok(Response::new(PingResponse {}))
+    }
+}
+
+/// Converts the connection the listener attached into its gRPC form.
+fn connection(report: &ConnectionReport) -> Connection {
+    Connection {
+        id: report.id.clone(),
+        request_number: report.request_number,
+        opened_at: report.opened_at.clone(),
     }
 }
 
