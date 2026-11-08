@@ -175,9 +175,12 @@ pub enum BodyEncoding {
 /// Writes the report as text, up to the blank line that precedes a body.
 ///
 /// The body is left out because text responses end with its original bytes, which a [`Report`] may
-/// only hold as base64.
+/// only hold as base64. Values are escaped, so the text is safe to print to a terminal even when
+/// the report came from an untrusted server.
 impl Display for Report {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        use self::escaping_writeln as writeln;
+
         if let Some(name) = &self.name {
             writeln!(f, "Name: {name}")?;
         }
@@ -211,15 +214,15 @@ impl Display for Report {
             }
         }
         if let Some(error) = &self.server_status.reload_error {
-            writeln!(f, "Reload error: {}", escape_controls(error))?;
+            writeln!(f, "Reload error: {error}")?;
         }
         for degradation in &self.server_status.degradations {
-            writeln!(f, "Degradation: {}", escape_controls(degradation))?;
+            writeln!(f, "Degradation: {degradation}")?;
         }
         if let Some(environment) = &self.environment {
             writeln!(f, "Environment:")?;
             for line in environment {
-                writeln!(f, "  {}", escape_controls(line))?;
+                writeln!(f, "  {line}")?;
             }
         }
         // An absolute-form target can name a different authority than the `Host` header.
@@ -241,16 +244,47 @@ impl Display for Report {
     }
 }
 
-/// Escapes control characters, so a value can't add lines or the blank line that ends a report.
-fn escape_controls(text: &str) -> String {
-    let escape = |character: char| {
-        if character.is_control() {
-            character.escape_default().to_string()
-        } else {
-            character.to_string()
-        }
+/// Writes a line like `std::writeln!`, escaping everything but the final newline, so no value can
+/// add lines, end a report early, drive the terminal, or reorder the text around it.
+macro_rules! escaping_writeln {
+    ($f:expr) => {
+        ::std::writeln!($f)
     };
-    text.chars().map(escape).collect()
+    ($f:expr, $($arg:tt)*) => {
+        fmt::Write::write_fmt(&mut Escaping($f), format_args!($($arg)*))
+            .and_then(|()| ::std::writeln!($f))
+    };
+}
+use escaping_writeln;
+
+/// Escapes control and invisible formatting characters in everything written through it.
+struct Escaping<'a, 'b>(&'a mut Formatter<'b>);
+
+impl fmt::Write for Escaping<'_, '_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        for character in text.chars() {
+            if is_unsafe_to_display(character) {
+                write!(self.0, "{}", character.escape_default())?;
+            } else {
+                self.0.write_char(character)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether a character changes the layout or display order of text rather than showing as itself.
+fn is_unsafe_to_display(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            // Bidirectional marks, embeddings, overrides, and isolates.
+            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            // Zero-width characters and the byte order mark.
+            | '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}'
+            // Line and paragraph separators.
+            | '\u{2028}' | '\u{2029}'
+        )
 }
 
 #[cfg(test)]
@@ -388,6 +422,73 @@ mod tests {
             lines,
             ["Reload error: bad\\n\\nkey", "Degradation: odd\\ncode"]
         );
+    }
+
+    #[test]
+    fn values_cannot_forge_lines_or_reorder_text() {
+        let hostile = "x\nIP: 6.6.6.6\t\u{1b}[2J\u{202e}\u{2066}\u{200b}\u{2028}";
+        let report = Report {
+            name: Some(hostile.to_owned()),
+            hostname: Some(hostile.to_owned()),
+            addresses: vec![hostile.to_owned()],
+            version: hostile.to_owned(),
+            commit: Some(hostile.to_owned()),
+            started_at: hostile.to_owned(),
+            request_id: hostile.to_owned(),
+            received_at: hostile.to_owned(),
+            remote_addr: hostile.to_owned(),
+            connection: ConnectionReport {
+                id: hostile.to_owned(),
+                request_number: 1,
+                opened_at: hostile.to_owned(),
+            },
+            environment: Some(vec![hostile.to_owned()]),
+            method: hostile.to_owned(),
+            target: hostile.to_owned(),
+            host: hostile.to_owned(),
+            http_version: hostile.to_owned(),
+            headers: BTreeMap::from([(hostile.to_owned(), vec![hostile.to_owned()])]),
+            tls: Some(TlsReport {
+                version: hostile.to_owned(),
+                cipher: hostile.to_owned(),
+                alpn: Some(hostile.to_owned()),
+                certificate_source: CertificateSource::Generated,
+                client_verification: ClientVerification::Unverified,
+                client_subjects: vec![hostile.to_owned()],
+            }),
+            server_status: ServerStatus {
+                reload_error: Some(hostile.to_owned()),
+                degradations: vec![hostile.to_owned()],
+            },
+            ..report()
+        };
+
+        let text = report.to_string();
+        let escaped = "x\\nIP: 6.6.6.6\\t\\u{1b}[2J\\u{202e}\\u{2066}\\u{200b}\\u{2028}";
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 20);
+        let is_heading = |line: &&str| ["Environment:", ""].contains(line);
+        assert!(
+            lines
+                .iter()
+                .all(|line| is_heading(line) || line.contains(escaped))
+        );
+        assert!(!text.lines().any(|line| line.starts_with("IP: 6.6.6.6")));
+        let raw = [
+            '\t', '\u{1b}', '\u{202e}', '\u{2066}', '\u{200b}', '\u{2028}',
+        ];
+        assert!(!text.contains(raw));
+    }
+
+    #[test]
+    fn json_keeps_values_exactly() {
+        let report = Report {
+            name: Some("x\n\t\u{1b}\u{202e}\u{200b}".to_owned()),
+            ..report()
+        };
+
+        let json = serde_json::to_string(&report).unwrap();
+        assert_eq!(serde_json::from_str::<Report>(&json).unwrap(), report);
     }
 
     #[test]
