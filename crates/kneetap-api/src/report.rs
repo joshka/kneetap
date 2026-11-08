@@ -275,16 +275,27 @@ impl fmt::Write for Escaping<'_, '_> {
 
 /// Whether a character changes the layout or display order of text rather than showing as itself.
 fn is_unsafe_to_display(character: char) -> bool {
-    character.is_control()
-        || matches!(
-            character,
-            // Bidirectional marks, embeddings, overrides, and isolates.
-            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-            // Zero-width characters and the byte order mark.
-            | '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}'
-            // Line and paragraph separators.
-            | '\u{2028}' | '\u{2029}'
-        )
+    character.is_control() || is_format_control(character)
+}
+
+/// Whether a character is an invisible format control, which changes how nearby text displays
+/// without showing itself.
+#[must_use]
+pub fn is_format_control(character: char) -> bool {
+    matches!(
+        character,
+        // Bidirectional marks, embeddings, overrides, and isolates, and the deprecated shaping
+        // controls after them.
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{206f}'
+        // The soft hyphen, zero-width characters, invisible operators, and the byte order mark.
+        | '\u{00ad}' | '\u{180e}' | '\u{200b}'..='\u{200d}' | '\u{2060}'..='\u{2064}' | '\u{feff}'
+        // Interlinear annotation marks and tag characters, which can hide text.
+        | '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}'
+        // Shorthand format controls and musical symbol formatting.
+        | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}'
+        // Line and paragraph separators.
+        | '\u{2028}' | '\u{2029}'
+    )
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 use std::fmt::{self, Write};
 
-use kneetap_api::{BodyEncoding, CertificateSource, Report, TlsReport};
+use kneetap_api::{BodyEncoding, CertificateSource, Report, TlsReport, is_format_control};
 
 mod curl;
 mod proxy;
@@ -431,7 +431,8 @@ fn write_response(page: &mut String, nonce: Option<&str>) -> fmt::Result {
     Ok(())
 }
 
-/// Escapes the characters that could end an element or attribute, so text stays text.
+/// Escapes the characters that could end an element or attribute, so text stays text, and shows
+/// invisible format controls by code point, so a value can't reorder or hide what's displayed.
 fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for character in text.chars() {
@@ -441,6 +442,9 @@ fn escape(text: &str) -> String {
             '>' => escaped.push_str("&gt;"),
             '"' => escaped.push_str("&quot;"),
             '\'' => escaped.push_str("&#39;"),
+            _ if is_format_control(character) => {
+                let _ = write!(escaped, "&lt;U+{:04X}&gt;", u32::from(character));
+            }
             _ => escaped.push(character),
         }
     }
@@ -545,6 +549,43 @@ pub(crate) mod tests {
             escape(r#"<a href="x">'&'</a>"#),
             "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
         );
+    }
+
+    #[test]
+    fn escape_shows_format_controls_by_code_point() {
+        let controls: String = ('\u{202A}'..='\u{202E}')
+            .chain('\u{2066}'..='\u{2069}')
+            .collect();
+
+        assert_eq!(
+            escape(&format!("a{controls}b")),
+            "a&lt;U+202A&gt;&lt;U+202B&gt;&lt;U+202C&gt;&lt;U+202D&gt;&lt;U+202E&gt;\
+             &lt;U+2066&gt;&lt;U+2067&gt;&lt;U+2068&gt;&lt;U+2069&gt;b"
+        );
+    }
+
+    #[test]
+    fn escape_shows_other_invisible_characters_by_code_point() {
+        assert_eq!(
+            escape("a\u{00AD}\u{206A}\u{E0041}b"),
+            "a&lt;U+00AD&gt;&lt;U+206A&gt;&lt;U+E0041&gt;b"
+        );
+    }
+
+    #[test]
+    fn query_names_and_folded_values_show_format_controls() {
+        let value = "x".repeat(FOLD_AFTER);
+        let report = Report {
+            target: format!("/a?%E2%80%AEname=%E2%80%AE{value}%E2%81%A6"),
+            ..report()
+        };
+
+        let page = render(&report, Some("n"));
+
+        assert!(page.contains("<th scope=\"row\">&lt;U+202E&gt;name</th>"));
+        assert!(page.contains("<span class=\"preview\">&lt;U+202E&gt;x"));
+        assert!(page.contains("x&lt;U+2066&gt;</details>"));
+        assert!(!page.contains(['\u{202E}', '\u{2066}']));
     }
 
     #[test]
