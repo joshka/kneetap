@@ -138,7 +138,7 @@ struct Serve {
     #[arg(help_heading = LIMITS)]
     max_connections: u32,
 
-    /// Most requests handled at once, across all connections
+    /// Most requests handled at once, across all connections, counting each open WebSocket
     #[arg(long, env = "KNEETAP_MAX_INFLIGHT_REQUESTS", default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
     #[arg(help_heading = LIMITS)]
     max_inflight_requests: u32,

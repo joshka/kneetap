@@ -211,15 +211,7 @@ async fn http2_websockets_that_keep_sending_outlive_the_idle_timeout() {
         .write_idle_timeout(SHORT);
     let address = start(builder);
     let mut client = http2(address).await;
-    let mut request = Request::builder()
-        .method(Method::CONNECT)
-        .uri(format!("http://{address}/echo"))
-        .header("sec-websocket-version", "13")
-        .body(())
-        .unwrap();
-    request
-        .extensions_mut()
-        .insert(Protocol::from_static("websocket"));
+    let request = websocket_request(address);
     let (response, mut send) = client.send_request(request, false).unwrap();
     let mut received = response.await.unwrap().into_body();
 
@@ -236,6 +228,62 @@ async fn http2_websockets_that_keep_sending_outlive_the_idle_timeout() {
 
         assert_eq!(echoed, Bytes::from_static(b"\x81\x02hi"));
     }
+}
+
+/// Builds an HTTP/2 extended CONNECT request that opens a WebSocket to `/echo`.
+fn websocket_request(address: SocketAddr) -> Request<()> {
+    let mut request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("http://{address}/echo"))
+        .header("sec-websocket-version", "13")
+        .body(())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(Protocol::from_static("websocket"));
+    request
+}
+
+/// Opens an HTTP/2 WebSocket to `/echo` on a new connection and returns its response status.
+async fn http2_websocket(address: SocketAddr) -> (u16, h2::SendStream<Bytes>) {
+    let mut client = http2(address).await;
+    let request = websocket_request(address);
+    let (response, send) = client.send_request(request, false).unwrap();
+    let status = response.await.unwrap().status().as_u16();
+    (status, send)
+}
+
+#[tokio::test]
+async fn open_http2_websockets_count_against_the_request_limit() {
+    let address = start(Server::builder().max_inflight_requests(2));
+    let (first, mut open) = http2_websocket(address).await;
+    let (second, _kept) = http2_websocket(address).await;
+    tokio::time::sleep(SHORT).await;
+
+    let (refused, _) = http2_websocket(address).await;
+    open.send_reset(h2::Reason::CANCEL);
+    tokio::time::sleep(SHORT).await;
+    let (reopened, _) = http2_websocket(address).await;
+
+    let statuses = (first, second, refused, reopened);
+    assert_eq!(statuses, (200, 200, 503, 200));
+}
+
+#[tokio::test]
+async fn open_http1_websockets_count_against_the_request_limit() {
+    let address = start(Server::builder().max_inflight_requests(1));
+    let url = format!("ws://{address}/echo");
+    let (socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(SHORT).await;
+
+    let refused = status(address, BENCH).await;
+    drop(socket);
+    tokio::time::sleep(SHORT).await;
+    let admitted = status(address, BENCH).await;
+
+    let statuses = (refused.as_str(), admitted.as_str());
+    let expected = ("HTTP/1.1 503 Service Unavailable", "HTTP/1.1 200 OK");
+    assert_eq!(statuses, expected);
 }
 
 #[tokio::test]

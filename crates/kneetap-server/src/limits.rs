@@ -353,7 +353,7 @@ impl Drop for RequestGuard {
 /// Holding it here rather than in the handler means a slow download still counts as in progress.
 pub struct TrackedBody {
     body: Body,
-    _permit: OwnedSemaphorePermit,
+    _permit: Arc<OwnedSemaphorePermit>,
     _guard: RequestGuard,
     wait: Option<ResponseWait>,
 }
@@ -361,7 +361,7 @@ pub struct TrackedBody {
 impl TrackedBody {
     pub const fn new(
         body: Body,
-        permit: OwnedSemaphorePermit,
+        permit: Arc<OwnedSemaphorePermit>,
         guard: RequestGuard,
         wait: Option<ResponseWait>,
     ) -> Self {

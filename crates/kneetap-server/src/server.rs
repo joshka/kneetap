@@ -253,9 +253,10 @@ impl ServerBuilder {
         self
     }
 
-    /// Sets how many requests can run at once. The default is 1024.
+    /// Sets how many requests can run at once, counting each open WebSocket. The default is 1024.
     ///
-    /// Further requests get a 503 until a response finishes or its client disconnects.
+    /// Further requests get a 503 until a response finishes, a WebSocket closes, or a client
+    /// disconnects.
     #[must_use]
     pub const fn max_inflight_requests(mut self, requests: usize) -> Self {
         self.limits.max_inflight_requests = requests;
