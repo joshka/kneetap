@@ -32,3 +32,9 @@ pub const HEALTH_MARKER: &str = "1";
 /// A probe searching several ports needs this to tell its server from another kneetap on one of
 /// them.
 pub const HEALTH_NAME_HEADER: &str = "x-kneetap-name";
+
+/// Response header giving the reason the server refused a request with `503 Service Unavailable`.
+///
+/// The reason goes in a header because a refusal has no body, so a client that never reads can't
+/// keep it open.
+pub const REFUSAL_HEADER: &str = "x-kneetap-refusal";

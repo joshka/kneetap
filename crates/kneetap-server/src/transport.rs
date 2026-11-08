@@ -8,13 +8,13 @@ use std::time::{Duration, SystemTime};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Request};
-use axum::http::{StatusCode, Version};
+use axum::http::{HeaderValue, StatusCode, Version};
 use axum::response::Response;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
-use kneetap_api::{ConnectionReport, TlsReport};
+use kneetap_api::{ConnectionReport, REFUSAL_HEADER, TlsReport};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -323,14 +323,14 @@ async fn admit(
         if refusals.allow(LOG_INTERVAL) {
             tracing::warn!(%method, %path, "request.admission.refused");
         }
-        return Ok(unavailable("request capacity exhausted\n"));
+        return Ok(unavailable("request capacity exhausted"));
     };
     let arrival = Arrival::now().inspect_err(|error| {
         tracing::warn!(%method, %path, %error, "request.id.failed");
     });
     // Refusing one request is better than reusing an ID, which would merge two reports.
     let Ok(arrival) = arrival else {
-        return Ok(unavailable("request IDs are unavailable\n"));
+        return Ok(unavailable("request IDs are unavailable"));
     };
     request.extensions_mut().insert(arrival);
     let guard = activity.begin();
@@ -345,9 +345,15 @@ async fn admit(
     Ok(response.map(|body| Body::new(TrackedBody::new(body, permit, guard, wait))))
 }
 
-/// Refuses a request the server can't take on now.
-fn unavailable(message: &'static str) -> Response {
-    let mut response = Response::new(Body::from(message));
+/// Refuses a request the server can't take on now, giving the reason in a header.
+///
+/// The response has no body, so it ends with its headers. An HTTP/2 client that keeps its window
+/// closed would otherwise hold the refused stream open, outside the capacity it was refused for.
+/// Headers aren't flow controlled, so the reason still arrives.
+fn unavailable(reason: &'static str) -> Response {
+    let mut response = Response::new(Body::empty());
+    let reason = HeaderValue::from_static(reason);
+    response.headers_mut().insert(REFUSAL_HEADER, reason);
     *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
     response
 }
